@@ -17,7 +17,7 @@ export async function GET(req: NextRequest) {
     try {
       writer.write(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
     } catch (e) {
-      // Conexión cerrada
+      console.error("Error transmitiendo evento neural:", e);
     }
   };
 

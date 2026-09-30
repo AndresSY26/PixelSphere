@@ -56,10 +56,11 @@ const aiGenerativeImageEditorFlow = ai.defineFlow(
     outputSchema: AiGenerativeImageEditorOutputSchema,
   },
   async input => {
-    const {output} = await editImagePrompt(input);
-    if (!output?.media) {
+    const response = await editImagePrompt(input);
+    const photoUri = response.output?.editedPhotoDataUri || (response.output as any)?.media?.url;
+    if (!photoUri) {
       throw new Error('No edited image was returned by the AI.');
     }
-    return {editedPhotoDataUri: output.media.url};
+    return {editedPhotoDataUri: photoUri};
   }
 );

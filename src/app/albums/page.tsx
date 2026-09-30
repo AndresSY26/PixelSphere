@@ -63,7 +63,8 @@ import {
   Inbox,
   Unlock,
   MinusCircle,
-  Calendar
+  Calendar,
+  Smartphone
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -245,6 +246,7 @@ export default function AlbumsPage() {
       setNewAlbumTitle('');
       setNewAlbumDesc('');
     } catch (error) {
+      console.error("Error al crear álbum:", error);
       toast({ title: "Error", variant: "destructive" });
     } finally {
       setIsCreating(false);
@@ -263,6 +265,7 @@ export default function AlbumsPage() {
       setIsMediaSelectorOpen(false);
       setSelectedGalleryIds(new Set());
     } catch (error) {
+      console.error("Error al vincular elementos al álbum:", error);
       toast({ title: "Error de Vinculación", variant: "destructive" });
     } finally {
       setIsAddingMedia(false);
@@ -275,16 +278,22 @@ export default function AlbumsPage() {
       await addMultipleToAlbum(albumId, user.id, [selectedMedia.id]); 
       const album = allAlbums.find(a => a.id === albumId);
       toast({ title: "Vínculo Creado", description: `Añadido a ${album?.title}` }); 
-    } catch (e) { toast({ title: "Error", variant: "destructive" }); }
+    } catch (e) {
+      console.error("Error al añadir al álbum:", e);
+      toast({ title: "Error", variant: "destructive" });
+    }
   };
 
   const handleRemoveFromAlbum = async (albumId: string) => {
     if (!user || !selectedMedia) return;
-    try {
-      await removeMultipleFromAlbum(albumId, user.id, [selectedMedia.id]);
+    try { 
+      await removeMultipleFromAlbum(albumId, user.id, [selectedMedia.id]); 
       const album = allAlbums.find(a => a.id === albumId);
-      toast({ title: "Vínculo Removido", description: `Retirado de ${album?.title}` });
-    } catch (e) { toast({ title: "Error", variant: "destructive" }); }
+      toast({ title: "Vínculo Removido", description: `Retirado de ${album?.title}` }); 
+    } catch (e) {
+      console.error("Error al remover del álbum:", e);
+      toast({ title: "Error", variant: "destructive" });
+    }
   };
 
   const handleTogglePublic = async (albumId: string, isPublic: boolean) => {
@@ -294,6 +303,7 @@ export default function AlbumsPage() {
       if (isPublic) await unlockAchievement(user.id, 'portfolio_star');
       toast({ title: isPublic ? "Álbum Público" : "Álbum Privado" });
     } catch (error) {
+      console.error("Error al actualizar privacidad del álbum:", error);
       toast({ title: "Error", variant: "destructive" });
     }
   };
@@ -305,6 +315,7 @@ export default function AlbumsPage() {
       if (currentAlbumId && deletedIds.includes(currentAlbumId)) setCurrentAlbumId(null);
       toast({ title: "Rama de Colecciones Purga", description: `${deletedIds.length} álbumes eliminados.` });
     } catch (error) {
+      console.error("Error al eliminar álbum:", error);
       toast({ title: "Error", variant: "destructive" });
     }
   }, [user, currentAlbumId, toast]);
@@ -315,7 +326,10 @@ export default function AlbumsPage() {
     try { 
       const updated = await updateMedia(selectedMedia.id, user.id, updates); 
       if (updated) setSelectedMedia(updated as Media); 
-    } catch (e) { toast({ title: "Error" }); } finally { setIsUpdating(false); }
+    } catch (e) {
+      console.error("Error al actualizar metadatos del medio:", e);
+      toast({ title: "Error" });
+    } finally { setIsUpdating(false); }
   };
 
   const handleAddTag = async () => {
@@ -373,6 +387,7 @@ export default function AlbumsPage() {
       setIsShareOpen(false);
       setShareUsername('');
     } catch (error) {
+      console.error("Error al compartir elemento por nombre de usuario:", error);
       toast({ title: "Falla de Red", variant: "destructive" });
     } finally {
       setIsSearchingUser(false);

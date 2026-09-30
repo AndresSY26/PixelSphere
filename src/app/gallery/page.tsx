@@ -13,7 +13,8 @@ import {
   findUserByUsername,
   recordInteraction,
   getFrequentContacts,
-  updateUserFilterPreferences
+  updateUserFilterPreferences,
+  recordMediaView
 } from '@/lib/storage';
 import { Media, User, Album, GalleryFilters } from '@/lib/types';
 import { 
@@ -219,7 +220,10 @@ export default function GalleryPage() {
       await deleteMedia(mediaId, user.id); 
       toast({ title: "Movido a Papelera" }); 
       setSelectedMedia(null); 
-    } catch (e) { toast({ title: "Error", variant: "destructive" }); }
+    } catch (e) {
+      console.error("Error al mover medio a papelera:", e);
+      toast({ title: "Error", variant: "destructive" });
+    }
   }, [user, toast]);
 
   const handleVault = useCallback(async (mediaId: string) => {
@@ -227,7 +231,10 @@ export default function GalleryPage() {
     try { 
       await updateMedia(mediaId, user.id, { isPrivate: true }); 
       toast({ title: "Activo Blindado" }); 
-    } catch (e) { toast({ title: "Error", variant: "destructive" }); }
+    } catch (e) {
+      console.error("Error al mover medio a la bóveda privada:", e);
+      toast({ title: "Error", variant: "destructive" });
+    }
   }, [user, toast]);
 
   const handleShareByUsername = async () => {
@@ -242,7 +249,10 @@ export default function GalleryPage() {
       await recordInteraction(user.id, targetUser.id);
       toast({ title: "Vínculo de Red Creado" });
       setIsShareOpen(false); setShareUsername('');
-    } catch (error) { toast({ title: "Falla de Red", variant: "destructive" }); } finally { setIsSearchingUser(false); }
+    } catch (error) {
+      console.error("Error al compartir medio con usuario:", error);
+      toast({ title: "Falla de Red", variant: "destructive" });
+    } finally { setIsSearchingUser(false); }
   };
 
   const toggleSelection = useCallback((id: string) => { 
@@ -255,8 +265,15 @@ export default function GalleryPage() {
   const openViewer = useCallback((item: Media) => { 
     if (isSelectionMode) toggleSelection(item.id);
     else if (item.isAdultContent) setAdultToConfirm(item);
-    else { setSelectedMedia(item); setTagInput(''); setTagSuggestions([]); setLinkNavParentId(null); }
-  }, [isSelectionMode, toggleSelection]);
+    else { 
+      setSelectedMedia(item); 
+      setTagInput(''); 
+      setTagSuggestions([]); 
+      setLinkNavParentId(null);
+      // REGISTRAR VISTA EN EL HISTORIAL
+      if (user) recordMediaView(user.id, item.id);
+    }
+  }, [isSelectionMode, toggleSelection, user]);
 
   const handlePointerDown = useCallback((id: string, isSelected: boolean) => {
     if (isSelectionMode) { setIsDragging(true); setDragSelectMode(!isSelected); toggleSelection(id); }
@@ -357,7 +374,17 @@ export default function GalleryPage() {
             <div className="flex flex-col lg:flex-row h-full overflow-hidden">
               <div className="relative h-[50vh] sm:h-[60vh] lg:h-full lg:flex-1 bg-black flex items-center justify-center overflow-hidden shrink-0">
                 <Button variant="ghost" size="icon" className="absolute top-4 left-4 z-50 rounded-full bg-black/40 text-white lg:hidden" onClick={() => setSelectedMedia(null)}><X className="h-6 w-6" /></Button>
-                {selectedMedia.type === 'video' ? <NeuralVideoPlayer src={selectedMedia.url} className="w-full h-full" /> : <img src={selectedMedia.url} className="w-full h-full object-contain" alt="" />}
+                {selectedMedia.type === 'video' ? (
+                  <NeuralVideoPlayer 
+                    src={selectedMedia.url} 
+                    mediaId={selectedMedia.id} 
+                    userId={user?.id || ''} 
+                    initialPosition={user?.videoProgress?.[selectedMedia.id] || 0}
+                    className="w-full h-full" 
+                  />
+                ) : (
+                  <img src={selectedMedia.url} className="w-full h-full object-contain" alt="" />
+                )}
               </div>
               <div className="flex-1 lg:w-[400px] bg-card border-t lg:border-t-0 lg:border-l border-white/10 flex flex-col overflow-hidden">
                 <ScrollArea className="flex-1">

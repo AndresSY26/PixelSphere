@@ -24,7 +24,14 @@ export interface User {
     albums?: AlbumFilters;
     search?: SearchFilters;
   };
+  viewHistory?: ViewHistoryEntry[];
+  videoProgress?: Record<string, number>; // mediaId -> seconds
   settings: UserSettings;
+}
+
+export interface ViewHistoryEntry {
+  mediaId: string;
+  viewedAt: string;
 }
 
 export interface GalleryFilters {

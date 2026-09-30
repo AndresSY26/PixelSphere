@@ -252,7 +252,10 @@ export default function SettingsPage() {
         window.dispatchEvent(new CustomEvent('ps-user-updated', { detail: savedUser }));
         toast({ title: "Configuración Persistida" });
       }
-    } catch (error) { toast({ title: "Falla", variant: "destructive" }); } finally { setSaving(false); }
+    } catch (error) {
+      console.error("Error al persistir configuración de usuario:", error);
+      toast({ title: "Falla", variant: "destructive" });
+    } finally { setSaving(false); }
   };
 
   const start2FASetup = async () => {
@@ -271,7 +274,10 @@ export default function SettingsPage() {
         setUser(result.user!); localStorage.setItem('ps_active_session', JSON.stringify(result.user));
         toast({ title: "2FA Activado" });
       }
-    } catch (e) { toast({ title: "Error", variant: "destructive" }); } finally { setIsVerifying2FA(false); }
+    } catch (e) {
+      console.error("Error al activar 2FA:", e);
+      toast({ title: "Error", variant: "destructive" });
+    } finally { setIsVerifying2FA(false); }
   };
 
   const registerBiometric = async () => {
@@ -290,7 +296,11 @@ export default function SettingsPage() {
         const saved = await saveUser(updatedUser);
         if (saved) { setUser(saved); setBiometricEnabled(true); localStorage.setItem('ps_active_session', JSON.stringify(saved)); toast({ title: "Nodo Biométrico Vinculado" }); }
       }
-    } catch (error) { setBiometricEnabled(false); toast({ title: "Error", variant: "destructive" }); }
+    } catch (error) {
+      console.error("Error al registrar biometría:", error);
+      setBiometricEnabled(false);
+      toast({ title: "Error", variant: "destructive" });
+    }
   };
 
   const triggerInstall = () => {

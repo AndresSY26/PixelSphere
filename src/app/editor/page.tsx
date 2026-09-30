@@ -201,6 +201,7 @@ function EditorContent() {
       await unlockAchievement(user.id, 'ai_editor');
       toast({ title: "Magia Completada", description: "La red neuronal ha transformado tu imagen." });
     } catch (error) {
+      console.error("Error al procesar edición generativa con IA:", error);
       toast({ title: "Falla de Procesamiento", description: "Error al generar la imagen editada.", variant: "destructive" });
     } finally {
       setIsProcessing(false);

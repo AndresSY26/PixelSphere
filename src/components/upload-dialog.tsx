@@ -128,6 +128,7 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
       setHasCameraPermission(true);
       if (videoRef.current) videoRef.current.srcObject = stream;
     } catch (error) {
+      console.error("Error al iniciar cámara:", error);
       setHasCameraPermission(false);
       toast({ variant: 'destructive', title: 'Acceso Denegado', description: 'Habilita la cámara.' });
     }
@@ -178,7 +179,10 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
         mediaRecorder.start(1000);
         setIsRecording(true);
         timerRef.current = setInterval(() => setRecordingSeconds(prev => prev + 1), 1000);
-      } catch (e) { toast({ variant: "destructive", title: "Error de video" }); }
+      } catch (e) {
+        console.error("Error al iniciar grabación de medios:", e);
+        toast({ variant: "destructive", title: "Error de video" });
+      }
     }
   };
 
@@ -305,6 +309,7 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
         completedCount++;
         setUploadQueue(prev => prev.map(f => f.id === item.id ? { ...f, status: 'completed', progress: 100 } : f));
       } catch (error: any) {
+        console.error("Error al procesar subida de archivo multimedia:", error);
         setUploadQueue(prev => prev.map(f => f.id === item.id ? { ...f, status: 'error' } : f));
         toast({ variant: 'destructive', title: 'Error de Ingesta', description: error.message });
       }

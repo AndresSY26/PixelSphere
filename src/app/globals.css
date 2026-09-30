@@ -50,10 +50,8 @@
     @apply border-border;
   }
   body {
-    @apply bg-background text-foreground selection:bg-primary/30;
+    @apply bg-background text-foreground selection:bg-primary/30 antialiased;
     font-feature-settings: "rlig" 1, "calt" 1;
-    /* FIX CRÍTICO: Asegurar interactividad tras modales */
-    pointer-events: auto !important;
   }
 
   /* Protocolo de Estética de Scroll Neural */

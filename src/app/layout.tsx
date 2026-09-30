@@ -47,7 +47,7 @@ export default function RootLayout({
                 window.addEventListener('load', function() {
                   navigator.serviceWorker.register('/sw.js').then(
                     function(reg) { console.log('Service Service registrado:', reg.scope); },
-                    function(err) { console.log('Fallo en registro de SW:', err); }
+                    function(err) { console.error('Fallo en registro de SW:', err); }
                   );
                 });
               }

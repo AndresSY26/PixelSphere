@@ -23,7 +23,8 @@ import {
   ChevronDown,
   ChevronRight,
   FolderOpen,
-  ShieldAlert
+  ShieldAlert,
+  Clock
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -54,6 +55,19 @@ import { cn } from '@/lib/utils';
 import UploadDialog from '@/components/upload-dialog';
 import { useNeuralSync } from '@/hooks/use-neural-sync';
 
+interface NavItem {
+  name: string;
+  href: string;
+  icon: any;
+  isCollapsible?: boolean;
+  badge?: string;
+}
+
+interface NavGroup {
+  label: string;
+  items: NavItem[];
+}
+
 const SidebarContent = ({
   isMobile,
   isSidebarOpen,
@@ -69,7 +83,7 @@ const SidebarContent = ({
   isAlbumsExpanded,
   setIsAlbumsExpanded
 }: any) => {
-  const navGroups = [
+  const navGroups: NavGroup[] = [
     {
       label: 'MI UNIVERSO',
       items: [
@@ -79,7 +93,11 @@ const SidebarContent = ({
         { name: 'Carpeta Privada', href: '/vault', icon: FolderLock },
       ]
     },
-    { label: 'EXPLORACIÓN', items: [{ name: 'Mapa Neural', href: '/world', icon: Globe }, { name: 'Cronología', href: '/timeline', icon: History }] },
+    { label: 'EXPLORACIÓN', items: [
+        { name: 'Mapa Neural', href: '/world', icon: Globe }, 
+        { name: 'Cronología', href: '/timeline', icon: History },
+        { name: 'Historial', href: '/history', icon: Clock }
+    ] },
     { label: 'PROCESADO', items: [{ name: 'Editor', href: '/editor', icon: Wand2, badge: 'PRO' }] },
     { label: 'ECOSISTEMA', items: [
         { name: 'Logros', href: '/achievements', icon: Medal }, 
@@ -256,14 +274,23 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     const mediaId = e.dataTransfer.getData('mediaId');
     const mediaIdsRaw = e.dataTransfer.getData('mediaIds');
     let idsToLink: string[] = [];
-    if (mediaIdsRaw) try { idsToLink = JSON.parse(mediaIdsRaw); } catch { idsToLink = mediaId ? [mediaId] : []; }
-    else if (mediaId) idsToLink = [mediaId];
+    if (mediaIdsRaw) {
+      try { 
+        idsToLink = JSON.parse(mediaIdsRaw); 
+      } catch (err) { 
+        console.error("Error al parsear mediaIds al soltar en álbum:", err);
+        idsToLink = mediaId ? [mediaId] : []; 
+      }
+    } else if (mediaId) idsToLink = [mediaId];
 
     if (idsToLink.length > 0 && user) {
       try {
         await addMultipleToAlbum(albumId, user.id, idsToLink);
         toast({ title: "Vínculos Creados", description: `${idsToLink.length} activos orquestados.` });
-      } catch (err) { toast({ title: "Error", variant: "destructive" }); }
+      } catch (err) { 
+        console.error("Error al añadir múltiples medios al álbum:", err);
+        toast({ title: "Error", variant: "destructive" }); 
+      }
     }
   };
 
@@ -337,6 +364,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 <DropdownMenuLabel>Mi Nodo</DropdownMenuLabel>
                 <DropdownMenuSeparator className="bg-white/5" />
                 <DropdownMenuItem onClick={() => router.push('/settings')}>Configuración</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => router.push('/history')}>Historial</DropdownMenuItem>
                 <DropdownMenuSeparator className="bg-white/5" />
                 <DropdownMenuItem className="text-red-400" onClick={handleLogout}>Cerrar Sesión</DropdownMenuItem>
               </DropdownMenuContent>

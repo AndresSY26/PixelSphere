@@ -4,7 +4,7 @@ import * as core from './storage-core';
 import { User, Media, Album } from './types';
 
 /**
- * CAPA DE SERVICIO PIXELSPHERE v45.4
+ * CAPA DE SERVICIO PIXELSPHERE v46.0
  * Server Actions para comunicación entre la UI y el Cerebro Neural.
  */
 
@@ -14,6 +14,10 @@ export async function findUserByEmail(e: string) { return core.findUserByEmail(e
 export async function saveUser(u: User) { return core.saveUser(u); }
 export async function recordSession(uid: string, ua: string) { return core.recordSession(uid, ua); }
 export async function getUsers() { return core.getUsers(); }
+
+// --- HISTORIAL ---
+export async function recordMediaView(uid: string, mid: string) { return core.recordMediaView(uid, mid); }
+export async function updateVideoProgress(uid: string, mid: string, s: number) { return core.updateVideoProgress(uid, mid, s); }
 
 export async function getMediaByUser(uid: string) { return core.getMediaByUser(uid); }
 export async function saveMediaMetadata(entry: Media) { return core.saveMediaMetadata(entry); }

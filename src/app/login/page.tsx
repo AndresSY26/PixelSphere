@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useState, useEffect, Suspense } from 'react';
@@ -43,7 +42,6 @@ function AuthContent() {
   const [pendingUser, setPendingUser] = useState<User | null>(null);
   const [canUseBiometrics, setCanUseBiometrics] = useState(false);
 
-  // Estados Biométricos
   const [isScanning, setIsScanning] = useState(false);
 
   useEffect(() => {
@@ -59,7 +57,6 @@ function AuthContent() {
     else setView('login');
   }, [searchParams]);
 
-  // Protocolo de validación proactiva de biometría
   useEffect(() => {
     if (view !== 'login') {
       setCanUseBiometrics(false);
@@ -67,13 +64,13 @@ function AuthContent() {
     }
 
     const validateBiometrics = async () => {
-      // Solo validar si parece un correo completo para optimizar nexo con el servidor
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
       if (emailRegex.test(email.trim())) {
         try {
           const userFound = await findUserByEmail(email.trim().toLowerCase());
           setCanUseBiometrics(!!(userFound && userFound.biometricEnabled && userFound.biometricCredentialId));
         } catch (e) {
+          console.error("Error al validar biometría:", e);
           setCanUseBiometrics(false);
         }
       } else {
@@ -81,7 +78,7 @@ function AuthContent() {
       }
     };
 
-    const timer = setTimeout(validateBiometrics, 500); // Debounce de 500ms
+    const timer = setTimeout(validateBiometrics, 500);
     return () => clearTimeout(timer);
   }, [email, view]);
 
@@ -101,6 +98,7 @@ function AuthContent() {
       const hashedPassword = await hashPassword(password.trim());
       
       if (user.passwordHash === hashedPassword) {
+        // Validación atómica de 2FA del servidor (ignora estados corruptos)
         if (user.is2FAEnabled) {
           setPendingUser(user);
           setStep('2fa');
@@ -112,6 +110,7 @@ function AuthContent() {
         toast({ title: "Credenciales Incorrectas", description: "Verifica tu contraseña.", variant: "destructive" });
       }
     } catch (error) {
+      console.error("Error en inicio de sesión:", error);
       toast({ title: "Falla de Sistema", variant: "destructive" });
     } finally {
       setIsLoading(false);
@@ -131,6 +130,7 @@ function AuthContent() {
         toast({ title: "Código Inválido", description: "El código no coincide con tu autenticador.", variant: "destructive" });
       }
     } catch (e) {
+      console.error("Error al verificar código 2FA:", e);
       toast({ title: "Error de Validación", variant: "destructive" });
     } finally {
       setIsLoading(false);
@@ -172,7 +172,7 @@ function AuthContent() {
       }
     } catch (e) {
       console.error("Falla en login biométrico:", e);
-      toast({ title: "Falla de Sensor", description: "No se pudo validar la identidad física. Verifica que tu navegador soporte biometría.", variant: "destructive" });
+      toast({ title: "Falla de Sensor", description: "No se pudo validar la identidad física.", variant: "destructive" });
     } finally {
       setIsScanning(false);
     }
@@ -209,6 +209,7 @@ function AuthContent() {
         username: username.trim(),
         email: email.trim().toLowerCase(),
         passwordHash: hashedPassword,
+        role: 'user',
         is2FAEnabled: false,
         createdAt: new Date().toISOString(),
         settings: {
@@ -230,6 +231,7 @@ function AuthContent() {
       await saveUser(newUser);
       await completeLogin(newUser);
     } catch (error) {
+      console.error("Error en registro de usuario:", error);
       toast({ title: "Error de Escritura", variant: "destructive" });
     } finally {
       setIsLoading(false);
@@ -272,7 +274,7 @@ function AuthContent() {
                     <Label className="text-[10px] font-black uppercase text-muted-foreground ml-1">Nombre de Usuario</Label>
                     <div className="relative">
                       <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                      <Input placeholder="identidad_nexo" className="pl-10 h-12 bg-white/5 border-white/10 rounded-xl focus:ring-primary text-white" value={username} onChange={(e) => setUsername(e.target.value)} required />
+                      <input placeholder="identidad_nexo" className="flex h-12 w-full pl-10 bg-white/5 border border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary text-white text-sm" value={username} onChange={(e) => setUsername(e.target.value)} required />
                     </div>
                   </div>
                 )}
@@ -281,7 +283,7 @@ function AuthContent() {
                   <Label className="text-[10px] font-black uppercase text-muted-foreground ml-1">Correo Electrónico</Label>
                   <div className="relative">
                     <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                    <Input type="email" placeholder="nodo@pixelsphere.io" className="pl-10 h-12 bg-white/5 border-white/10 rounded-xl focus:ring-primary text-white" value={email} onChange={(e) => setEmail(e.target.value)} required />
+                    <input type="email" placeholder="nodo@pixelsphere.io" className="flex h-12 w-full pl-10 bg-white/5 border border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary text-white text-sm" value={email} onChange={(e) => setEmail(e.target.value)} required />
                   </div>
                 </div>
 
@@ -292,7 +294,7 @@ function AuthContent() {
                   </div>
                   <div className="relative">
                     <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                    <Input type="password" placeholder="••••••••" className="pl-10 h-12 bg-white/5 border-white/10 rounded-xl focus:ring-primary text-white" value={password} onChange={(e) => setPassword(e.target.value)} required />
+                    <input type="password" placeholder="••••••••" className="flex h-12 w-full pl-10 bg-white/5 border border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary text-white text-sm" value={password} onChange={(e) => setPassword(e.target.value)} required />
                   </div>
                 </div>
 
@@ -325,9 +327,9 @@ function AuthContent() {
               <div className="flex justify-center"><div className="p-5 rounded-3xl bg-primary/10 border border-primary/20 text-primary shadow-inner"><Zap className="h-10 w-10 fill-primary/20" /></div></div>
               <div className="space-y-4">
                 <Label className="text-[10px] font-black uppercase text-muted-foreground tracking-[0.3em] block text-center">Código del Autenticador</Label>
-                <Input 
+                <input 
                   placeholder="000000" 
-                  className="h-20 text-center text-4xl font-black tracking-[0.5em] bg-white/5 border-white/10 rounded-2xl focus:ring-primary text-white" 
+                  className="flex h-20 w-full text-center text-4xl font-black tracking-[0.5em] bg-white/5 border border-white/10 rounded-2xl focus:outline-none focus:ring-2 focus:ring-primary text-white" 
                   maxLength={6}
                   value={otpCode}
                   onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))}
@@ -343,7 +345,6 @@ function AuthContent() {
         </div>
       </div>
 
-      {/* Consola de Escaneo Biométrico */}
       <Dialog open={isScanning} onOpenChange={setIsScanning}>
         <DialogContent className="max-w-md bg-black/95 border-primary/30 rounded-[2.5rem] p-10 shadow-[0_0_50px_rgba(115,115,240,0.3)] backdrop-blur-2xl">
           <div className="flex flex-col items-center text-center space-y-8 relative">

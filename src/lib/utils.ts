@@ -46,7 +46,7 @@ export function hexToHSLComponents(hex: string): string {
   }
   r /= 255; g /= 255; b /= 255;
   let max = Math.max(r, g, b), min = Math.min(r, g, b);
-  let h, s, l = (max + min) / 2;
+  let h = 0, s = 0, l = (max + min) / 2;
   if (max === min) { h = s = 0; }
   else {
     let d = max - min;

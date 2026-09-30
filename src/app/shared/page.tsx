@@ -128,7 +128,17 @@ export default function SharedPage() {
   const handleRevokeAll = async (itemId: string) => {
     if (!currentUser) return;
     setIsRevoking(true);
-    try { await clearAllSharedAccess(itemId, currentUser.id); toast({ title: "Distribución Finalizada" }); setDetailsItem(null); loadAllData(); } catch (e) { toast({ title: "Error", variant: "destructive" }); } finally { setIsRevoking(false); }
+    try { 
+      await clearAllSharedAccess(itemId, currentUser.id); 
+      toast({ title: "Distribución Finalizada" }); 
+      setDetailsItem(null); 
+      loadAllData(); 
+    } catch (e) { 
+      console.error("Error al revocar acceso compartido:", e);
+      toast({ title: "Error", variant: "destructive" }); 
+    } finally { 
+      setIsRevoking(false); 
+    }
   };
 
   return (

@@ -65,6 +65,7 @@ export async function POST(req: NextRequest) {
     
     return NextResponse.json({ status: 'chunk_received', index: chunkIndex });
   } catch (error: any) {
+    console.error("Error en ingesta de archivo:", error);
     return NextResponse.json({ error: 'Error en ingesta.', details: error.message }, { status: 500 });
   }
 }

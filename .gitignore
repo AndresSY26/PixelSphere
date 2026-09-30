@@ -1,42 +1,34 @@
-# dependencies
-/node_modules
-/.pnp
-.pnp.js
+# Next.js & Build Output
+.next/
+out/
+build/
+*.tsbuildinfo
 
-# testing
-/coverage
-
-# next.js
-/.next/
-/out/
-
-# production
-/build
-
-# misc
-.DS_Store
-*.pem
-
-# debug
+# Node dependencies
+node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+.pnpm-debug.log*
 
-# local env files
-.env*.local
-
-# vercel
-.vercel
-
-# typescript
-*.tsbuildinfo
-next-env.d.ts
-
-# PixelSphere - Infraestructura Física
-/data/*.json
-/public/uploads/**
-!.gitkeep
-
-# IA y Agentes
-.agents
+# Environment variables & secrets
 .env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# PixelSphere Physical Persistence & Uploads
+data/
+public/uploads/
+
+# IDE & Editor caches
+.vscode/
+.idea/
+.antigravity/
+.agents/
+.DS_Store
+Thumbs.db
+
+# Deployment
+.vercel

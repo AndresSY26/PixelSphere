@@ -200,6 +200,7 @@ export default function CloudBridgePage() {
         toast({ variant: "destructive", title: "Conexión Expirada", description: "Por seguridad, vuelve a conectar tu cuenta." });
       }
     } catch (e) {
+      console.error("Error al obtener fotos de Google Photos:", e);
       toast({ variant: "destructive", title: "Error de Red", description: "No se pudieron obtener tus fotos de Google." });
     } finally {
       setIsLoadingCloud(false);
@@ -241,7 +242,7 @@ export default function CloudBridgePage() {
 
         if (response.ok) successCount++;
       } catch (e) {
-        console.error("Error importando:", item.id);
+        console.error("Error importando:", item.id, e);
       }
       setImportProgress(Math.round(((i + 1) / itemsToImport.length) * 100));
     }

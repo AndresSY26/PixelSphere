@@ -57,6 +57,7 @@ import {
   Link as LinkIcon,
   Copy,
   Sparkles,
+  MinusCircle,
   Plus
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -254,6 +255,7 @@ export default function PrivateFolderPage() {
       setViewState('UNLOCKED');
       toast({ title: "Carpeta Privada Inicializada", description: "Contraseña blindada correctamente." });
     } catch (e) {
+      console.error("Error al inicializar contraseña de la bóveda:", e);
       toast({ title: "Falla de Sistema", variant: "destructive" });
     } finally {
       setIsAuthenticating(false);
@@ -273,6 +275,7 @@ export default function PrivateFolderPage() {
         toast({ title: "Acceso Denegado", description: "Contraseña incorrecta.", variant: "destructive" });
       }
     } catch (e) {
+      console.error("Error al autenticar y desbloquear bóveda:", e);
       toast({ title: "Error de Autenticación", variant: "destructive" });
     } finally {
       setIsAuthenticating(false);
@@ -354,7 +357,10 @@ export default function PrivateFolderPage() {
       if (updated) { 
         setSelectedMedia(updated as Media); 
       } 
-    } catch (e) { toast({ title: "Error" }); } finally { setIsUpdating(false); }
+    } catch (e) {
+      console.error("Error al actualizar metadatos en bóveda:", e);
+      toast({ title: "Error" });
+    } finally { setIsUpdating(false); }
   };
 
   const handleAddTag = async () => {
@@ -393,7 +399,10 @@ export default function PrivateFolderPage() {
       await addMultipleToAlbum(albumId, user.id, [selectedMedia.id]); 
       const album = albums.find(a => a.id === albumId);
       toast({ title: "Vínculo Creado", description: `Añadido a ${album?.title}` }); 
-    } catch (e) { toast({ title: "Error", variant: "destructive" }); }
+    } catch (e) {
+      console.error("Error al añadir medio a álbum en bóveda:", e);
+      toast({ title: "Error", variant: "destructive" });
+    }
   };
 
   const handleRemoveFromAlbum = async (albumId: string) => {
@@ -402,7 +411,10 @@ export default function PrivateFolderPage() {
       await removeMultipleFromAlbum(albumId, user.id, [selectedMedia.id]);
       const album = albums.find(a => a.id === albumId);
       toast({ title: "Vínculo Removido", description: `Retirado de ${album?.title}` });
-    } catch (e) { toast({ title: "Error", variant: "destructive" }); }
+    } catch (e) {
+      console.error("Error al remover medio de álbum en bóveda:", e);
+      toast({ title: "Error", variant: "destructive" });
+    }
   };
 
   const handleRestore = async () => {
@@ -412,6 +424,7 @@ export default function PrivateFolderPage() {
       toast({ title: "Restaurado", description: "El activo ha vuelto a la galería común." });
       setSelectedMedia(null);
     } catch (e) { 
+      console.error("Error al restaurar medio de la bóveda:", e);
       toast({ title: "Error", variant: "destructive" }); 
     }
   };
@@ -423,6 +436,7 @@ export default function PrivateFolderPage() {
       toast({ title: "Movido a Papelera", description: "Tienes 30 días para recuperarlo." });
       setSelectedMedia(null);
     } catch (e) {
+      console.error("Error al enviar medio de bóveda a papelera:", e);
       toast({ title: "Error", variant: "destructive" });
     }
   };
@@ -453,6 +467,7 @@ export default function PrivateFolderPage() {
       
       toast({ title: "Exportación de Bóveda Exitosa", description: "El paquete blindado ha sido generado." });
     } catch (error) {
+      console.error("Error en exportación masiva de bóveda:", error);
       toast({ title: "Error de Exportación", variant: "destructive" });
     } finally {
       setIsExporting(false);
@@ -490,7 +505,10 @@ export default function PrivateFolderPage() {
       await recordInteraction(user.id, targetUser.id);
       toast({ title: "Vínculo de Red Creado" });
       setIsShareOpen(false); setShareUsername('');
-    } catch (error) { toast({ title: "Falla de Red", variant: "destructive" }); } finally { setIsSearchingUser(false); }
+    } catch (error) {
+      console.error("Error al compartir medio de bóveda por nombre de usuario:", error);
+      toast({ title: "Falla de Red", variant: "destructive" });
+    } finally { setIsSearchingUser(false); }
   };
 
   const copyShareLink = () => {

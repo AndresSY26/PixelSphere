@@ -195,6 +195,7 @@ function SearchResultsContent() {
       toast({ title: "Movido a Papelera", description: "Tienes 30 días para recuperarlo." });
       setSelectedMedia(null);
     } catch (e) {
+      console.error("Error al eliminar medio en búsqueda:", e);
       toast({ title: "Error", variant: "destructive" });
     }
   };
@@ -209,6 +210,7 @@ function SearchResultsContent() {
         setSelectedMedia(updated as Media);
       }
     } catch (e) {
+      console.error("Error al actualizar metadatos del medio en búsqueda:", e);
       toast({ title: "Error" });
     } finally {
       setIsUpdating(false);
@@ -254,7 +256,10 @@ function SearchResultsContent() {
       }
       const album = albums.find(a => a.id === albumId);
       toast({ title: "Vínculo Creado", description: `Añadido a ${album?.title}` }); 
-    } catch (e) { toast({ title: "Error", variant: "destructive" }); }
+    } catch (e) {
+      console.error("Error al añadir al álbum en búsqueda:", e);
+      toast({ title: "Error", variant: "destructive" });
+    }
   };
 
   const handleRemoveFromAlbum = async (albumId: string) => {
@@ -266,7 +271,10 @@ function SearchResultsContent() {
       }
       const album = albums.find(a => a.id === albumId);
       toast({ title: "Vínculo Removido", description: `Retirado de ${album?.title}` });
-    } catch (e) { toast({ title: "Error", variant: "destructive" }); }
+    } catch (e) {
+      console.error("Error al remover del álbum en búsqueda:", e);
+      toast({ title: "Error", variant: "destructive" });
+    }
   };
 
   const openViewer = (item: Media) => {

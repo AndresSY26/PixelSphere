@@ -1,4 +1,3 @@
-
 "use client";
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
@@ -11,18 +10,23 @@ import {
   Minimize2, 
   Loader2,
   MoreVertical,
-  Volume1
+  Volume1,
+  RotateCcw
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
+import { updateVideoProgress } from '@/lib/storage';
 import { cn } from '@/lib/utils';
 
 interface NeuralVideoPlayerProps {
   src: string;
+  mediaId?: string;
+  userId?: string;
+  initialPosition?: number;
   className?: string;
 }
 
-export default function NeuralVideoPlayer({ src, className }: NeuralVideoPlayerProps) {
+export default function NeuralVideoPlayer({ src, mediaId, userId, initialPosition = 0, className }: NeuralVideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   
@@ -37,6 +41,23 @@ export default function NeuralVideoPlayer({ src, className }: NeuralVideoPlayerP
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showControls, setShowControls] = useState(true);
   const [isHovering, setIsHovering] = useState(false);
+  const [hasResumed, setHasResumed] = useState(false);
+
+  useEffect(() => {
+    if (videoRef.current && initialPosition > 0 && !hasResumed) {
+      videoRef.current.currentTime = initialPosition;
+      setHasResumed(true);
+    }
+  }, [initialPosition, hasResumed]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (videoRef.current && !videoRef.current.paused && mediaId && userId) {
+        updateVideoProgress(userId, mediaId, videoRef.current.currentTime);
+      }
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [mediaId, userId]);
 
   useEffect(() => {
     let timeout: NodeJS.Timeout;
@@ -48,17 +69,27 @@ export default function NeuralVideoPlayer({ src, className }: NeuralVideoPlayerP
     return () => clearTimeout(timeout);
   }, [isPlaying, isHovering]);
 
-  const togglePlay = useCallback(() => {
-    if (videoRef.current) {
-      if (isPlaying) {
-        videoRef.current.pause();
+  const togglePlay = useCallback(async () => {
+    if (!videoRef.current) return;
+
+    try {
+      if (videoRef.current.paused) {
+        const playPromise = videoRef.current.play();
+        if (playPromise !== undefined) {
+          await playPromise;
+        }
+        setIsPlaying(true);
       } else {
-        videoRef.current.play();
+        videoRef.current.pause();
+        setIsPlaying(false);
       }
-      setIsPlaying(!isPlaying);
       setShowControls(true);
+    } catch (error: any) {
+      if (error.name !== 'AbortError') {
+        console.error("Error de reproducción neural:", error);
+      }
     }
-  }, [isPlaying]);
+  }, []);
 
   const handleVolumeChange = (value: number[]) => {
     const newVolume = value[0] / 100;
@@ -171,12 +202,12 @@ export default function NeuralVideoPlayer({ src, className }: NeuralVideoPlayerP
         onEnded={() => {
           setIsPlaying(false);
           setShowControls(true);
+          if (userId && mediaId) updateVideoProgress(userId, mediaId, 0);
         }}
         onClick={togglePlay}
         playsInline
       />
 
-      {/* Overlay de Carga (Buffering) */}
       {isBuffering && (
         <div className="absolute inset-0 flex items-center justify-center z-40 bg-black/20 pointer-events-none">
           <div className="flex flex-col items-center gap-4">
@@ -189,7 +220,6 @@ export default function NeuralVideoPlayer({ src, className }: NeuralVideoPlayerP
         </div>
       )}
 
-      {/* Overlay de Controles Táctiles Pro */}
       <div 
         className={cn(
           "absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-black/40 transition-opacity duration-500 flex flex-col justify-between p-4 lg:p-8 z-30",
@@ -197,23 +227,28 @@ export default function NeuralVideoPlayer({ src, className }: NeuralVideoPlayerP
         )}
         onClick={togglePlay}
       >
-        {/* Superior: Info rápida */}
         <div className="flex justify-between items-start">
-          <div className="px-3 py-1.5 rounded-full bg-black/40 backdrop-blur-md border border-white/10 flex items-center gap-2">
-            <div className={cn("w-1.5 h-1.5 rounded-full bg-accent shadow-[0_0_8px_#66E0FF]", isPlaying && "animate-pulse")} />
-            <span className="text-[10px] font-black text-white uppercase tracking-[0.2em]">Neural Streaming</span>
+          <div className="flex flex-col gap-2">
+            <div className="px-3 py-1.5 rounded-full bg-black/40 backdrop-blur-md border border-white/10 flex items-center gap-2">
+              <div className={cn("w-1.5 h-1.5 rounded-full bg-accent shadow-[0_0_8px_#66E0FF]", isPlaying && "animate-pulse")} />
+              <span className="text-[10px] font-black text-white uppercase tracking-[0.2em]">Neural Streaming</span>
+            </div>
+            {initialPosition > 0 && (
+              <div className="px-3 py-1 rounded-full bg-primary/20 backdrop-blur-md border border-primary/30 flex items-center gap-2 animate-fade-in">
+                <RotateCcw className="h-3 w-3 text-primary" />
+                <span className="text-[9px] font-black text-primary uppercase">Retomando en {formatTime(initialPosition)}</span>
+              </div>
+            )}
           </div>
           <Button variant="ghost" size="icon" className="text-white hover:bg-white/10 lg:hidden">
             <MoreVertical className="h-5 w-5" />
           </Button>
         </div>
 
-        {/* Inferior: Barra de mando */}
         <div 
           className="w-full space-y-6 sm:space-y-8" 
           onClick={(e) => e.stopPropagation()}
         >
-          {/* Barra de progreso de alto contraste */}
           <div className="w-full group/slider">
             <Slider
               value={[progress]}
@@ -274,7 +309,6 @@ export default function NeuralVideoPlayer({ src, className }: NeuralVideoPlayerP
         </div>
       </div>
 
-      {/* Play central persistente */}
       {!isPlaying && !isBuffering && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20">
           <div className="h-24 w-24 bg-primary/20 backdrop-blur-2xl rounded-full border border-primary/30 flex items-center justify-center animate-zoom-in shadow-[0_0_50px_rgba(115,115,240,0.3)]">

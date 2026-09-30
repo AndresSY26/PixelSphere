@@ -2,13 +2,13 @@ import fs from 'node:fs/promises';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { authenticator } from 'otplib';
-import { User, Media, Achievement, Album, Session } from './types';
+import { User, Media, Achievement, Album, Session, ViewHistoryEntry } from './types';
 import { FILE_PATHS, DATA_DIR, UPLOADS_DIR } from './storage-constants';
 import { emitNeuralUpdate } from './neural-events';
 
 /**
- * PIXELSPHERE CORE v45.8 - CEREBRO NEURAL PARA ADMINISTRACIÓN
- * Gestión de RAM persistente, jerarquía de roles forzada y cola de escritura asíncrona.
+ * PIXELSPHERE CORE v49.0 - PROTOCOLO DE CONTINUIDAD ATÓMICA
+ * Gestión de RAM persistente, blindaje de roles y purga forzada de 2FA.
  */
 
 const ENCRYPTION_KEY = Buffer.from('f36e82671573282b12da05b1e195a0d585820bb105a218056eb30119105a2185', 'hex');
@@ -40,19 +40,34 @@ if (process.env.NODE_ENV !== 'production') globalForStorage.storageCache = CACHE
 let diskWritePromise: Promise<void> = Promise.resolve();
 
 /**
- * PROTOCOLO DE BLINDAJE DE ROLES (REGLA DE ORO)
- * Asegura que AndRoy mantenga su rango y que el resto tenga el rol de user.
+ * PROTOCOLO DE BLINDAJE DE NÚCLEO
+ * Asegura roles de admin y desactiva 2FA de emergencia para AndRoy con persistencia atómica.
  */
-function enforceRoles(users: User[]): User[] {
-  return users.map(user => {
-    const isAdmin = user.id === '6k7ddznwz' || user.email === 'andresksa123@gmail.com';
-    const targetRole = isAdmin ? 'admin' : (user.role || 'user');
+function enforceSecurityPolicies(users: User[]): { users: User[], changed: boolean } {
+  let changed = false;
+  const nextUsers = users.map(user => {
+    const isMainAdmin = user.id === '6k7ddznwz' || user.email === 'andresksa123@gmail.com';
+    const targetRole = isMainAdmin ? 'admin' : (user.role || 'user');
     
+    let updatedUser = { ...user };
+    
+    // Forzar Rol
     if (user.role !== targetRole) {
-      return { ...user, role: targetRole };
+      updatedUser.role = targetRole;
+      changed = true;
     }
-    return user;
+
+    // DESACTIVACIÓN DE EMERGENCIA: 2FA para el administrador principal
+    if (isMainAdmin && (user.is2FAEnabled || user.twoFASecret)) {
+      updatedUser.is2FAEnabled = false;
+      delete updatedUser.twoFASecret;
+      changed = true;
+    }
+
+    return updatedUser;
   });
+
+  return { users: nextUsers, changed };
 }
 
 async function syncToDisk(type: keyof Omit<GlobalCache, 'isInitialized'>) {
@@ -60,9 +75,9 @@ async function syncToDisk(type: keyof Omit<GlobalCache, 'isInitialized'>) {
     try {
       const filePath = FILE_PATHS[type.toUpperCase() as keyof typeof FILE_PATHS];
       
-      // Aplicar blindaje antes de la escritura física
       if (type === 'users') {
-        CACHE.users = enforceRoles(CACHE.users);
+        const result = enforceSecurityPolicies(CACHE.users);
+        CACHE.users = result.users;
       }
 
       const data = JSON.stringify(CACHE[type], null, 2);
@@ -70,15 +85,19 @@ async function syncToDisk(type: keyof Omit<GlobalCache, 'isInitialized'>) {
     } catch (err) {
       console.error(`[Nexo Neural] Error en persistencia: ${type}`, err);
     }
-  }).catch(() => {
+  }).catch((err) => {
+    console.error('[Nexo Neural] Error en cadena de persistencia en disco:', err);
     diskWritePromise = Promise.resolve();
   });
 }
 
 export async function ensureDirectories() {
   if (CACHE.isInitialized) {
-    // Re-validar roles en memoria incluso si ya está inicializado (Self-healing)
-    CACHE.users = enforceRoles(CACHE.users);
+    const result = enforceSecurityPolicies(CACHE.users);
+    if (result.changed) {
+      CACHE.users = result.users;
+      await syncToDisk('users');
+    }
     return;
   }
   
@@ -94,19 +113,18 @@ export async function ensureDirectories() {
       try {
         const data = await fs.readFile(filePath, 'utf-8');
         CACHE[entity] = JSON.parse(data || '[]');
-      } catch {
+      } catch (err) {
+        console.error(`[Nexo Neural] No se pudo leer o parsear ${filePath}, inicializando vacío:`, err);
         await fs.writeFile(filePath, '[]');
         CACHE[entity] = [];
       }
     }
 
-    // Estandarización forzada en el arranque
-    const originalCount = CACHE.users.length;
-    CACHE.users = enforceRoles(CACHE.users);
+    const result = enforceSecurityPolicies(CACHE.users);
+    CACHE.users = result.users;
     await syncToDisk('users');
 
     CACHE.isInitialized = true;
-    console.log("Cerebro Neural v45.8 Online. Roles Blindados.");
   })();
 
   return globalForStorage.initPromise;
@@ -130,7 +148,10 @@ export function decrypt(text: string): string {
     let decrypted = decipher.update(encryptedText);
     decrypted = Buffer.concat([decrypted, decipher.final()]);
     return decrypted.toString();
-  } catch { return ""; }
+  } catch (error) {
+    console.error("Error al desencriptar texto:", error);
+    return "";
+  }
 }
 
 export async function hashPassword(password: string): Promise<string> {
@@ -141,24 +162,30 @@ export async function hashPassword(password: string): Promise<string> {
 export async function getUsers() { await ensureDirectories(); return CACHE.users; }
 export async function findUserByEmail(email: string) { 
   await ensureDirectories(); 
-  return CACHE.users.find(u => u.email.toLowerCase() === email.toLowerCase()); 
+  const user = CACHE.users.find(u => u.email.toLowerCase() === email.toLowerCase());
+  if (user) {
+    const result = enforceSecurityPolicies([user]);
+    if (result.changed) {
+      const idx = CACHE.users.findIndex(u => u.id === user.id);
+      CACHE.users[idx] = result.users[0];
+      await syncToDisk('users');
+      return result.users[0];
+    }
+  }
+  return user;
 }
 export async function saveUser(userData: User) {
   await ensureDirectories();
   
-  // Reforzar rol antes de insertar en caché
-  const isAdmin = userData.id === '6k7ddznwz' || userData.email === 'andresksa123@gmail.com';
-  const finalUserData = {
-    ...userData,
-    role: isAdmin ? 'admin' : (userData.role || 'user')
-  } as User;
-
-  const idx = CACHE.users.findIndex(u => u.id === finalUserData.id);
-  if (idx > -1) CACHE.users[idx] = finalUserData; else CACHE.users.push(finalUserData);
+  const idx = CACHE.users.findIndex(u => u.id === userData.id);
+  if (idx > -1) CACHE.users[idx] = userData; else CACHE.users.push(userData);
   
-  syncToDisk('users');
-  emitNeuralUpdate('USERS', { userId: finalUserData.id });
-  return finalUserData;
+  const result = enforceSecurityPolicies(CACHE.users);
+  CACHE.users = result.users;
+  
+  await syncToDisk('users');
+  emitNeuralUpdate('USERS', { userId: userData.id });
+  return CACHE.users.find(u => u.id === userData.id) || userData;
 }
 
 export async function recordSession(userId: string, userAgent: string) {
@@ -173,8 +200,39 @@ export async function recordSession(userId: string, userAgent: string) {
   };
   CACHE.users[idx].sessions = [newSession, ...(CACHE.users[idx].sessions || []).map(s => ({...s, isCurrent: false}))].slice(0, 5);
   
-  // El rol se mantiene porque CACHE.users[idx] ya lo tiene (o se arregla en syncToDisk)
-  syncToDisk('users');
+  const result = enforceSecurityPolicies(CACHE.users);
+  CACHE.users = result.users;
+  
+  await syncToDisk('users');
+  return CACHE.users[idx];
+}
+
+export async function recordMediaView(userId: string, mediaId: string) {
+  await ensureDirectories();
+  const idx = CACHE.users.findIndex(u => u.id === userId);
+  if (idx === -1) return;
+
+  const history = CACHE.users[idx].viewHistory || [];
+  const nextHistory = [
+    { mediaId, viewedAt: new Date().toISOString() },
+    ...history.filter(h => h.mediaId !== mediaId)
+  ].slice(0, 100);
+
+  CACHE.users[idx].viewHistory = nextHistory;
+  await syncToDisk('users');
+  return CACHE.users[idx];
+}
+
+export async function updateVideoProgress(userId: string, mediaId: string, seconds: number) {
+  await ensureDirectories();
+  const idx = CACHE.users.findIndex(u => u.id === userId);
+  if (idx === -1) return;
+
+  const progress = CACHE.users[idx].videoProgress || {};
+  progress[mediaId] = seconds;
+
+  CACHE.users[idx].videoProgress = progress;
+  await syncToDisk('users');
   return CACHE.users[idx];
 }
 
@@ -189,7 +247,7 @@ export async function saveMediaMetadata(entry: Media) {
   await ensureDirectories();
   const exists = CACHE.media.findIndex(m => m.id === entry.id);
   if (exists > -1) CACHE.media[exists] = entry; else CACHE.media.push(entry);
-  syncToDisk('media');
+  await syncToDisk('media');
   emitNeuralUpdate('MEDIA', { userId: entry.userId });
   return entry;
 }
@@ -199,7 +257,7 @@ export async function updateMedia(id: string, uid: string, updates: Partial<Medi
   const idx = CACHE.media.findIndex(m => m.id === id && m.userId === uid);
   if (idx === -1) return null;
   CACHE.media[idx] = { ...CACHE.media[idx], ...updates };
-  syncToDisk('media');
+  await syncToDisk('media');
   emitNeuralUpdate('MEDIA', { userId: uid });
   return CACHE.media[idx];
 }
@@ -216,7 +274,7 @@ export async function updateMultipleMedia(ids: string[], uid: string, updates: P
     return m;
   });
   if (changed) {
-    syncToDisk('media');
+    await syncToDisk('media');
     emitNeuralUpdate('MEDIA', { userId: uid });
   }
   return changed;
@@ -231,7 +289,7 @@ export async function deleteMedia(id: string, uid: string) {
   } else {
     CACHE.media[idx] = { ...CACHE.media[idx], isDeleted: true, deletedAt: new Date().toISOString() };
   }
-  syncToDisk('media');
+  await syncToDisk('media');
   emitNeuralUpdate('MEDIA', { userId: uid });
   return true;
 }
@@ -251,7 +309,7 @@ export async function deleteMultipleMedia(ids: string[], uid: string) {
   });
   if (changed) {
     CACHE.media = nextMedia;
-    syncToDisk('media');
+    await syncToDisk('media');
     emitNeuralUpdate('MEDIA', { userId: uid });
   }
   return changed;
@@ -269,7 +327,7 @@ export async function restoreMultipleMedia(ids: string[], uid: string) {
     return m;
   });
   if (changed) {
-    syncToDisk('media');
+    await syncToDisk('media');
     emitNeuralUpdate('MEDIA', { userId: uid });
   }
   return changed;
@@ -281,7 +339,7 @@ export async function getAlbumsByUser(uid: string) { await ensureDirectories(); 
 export async function createAlbum(a: Album) { 
   await ensureDirectories(); 
   CACHE.albums.push(a); 
-  syncToDisk('albums'); 
+  await syncToDisk('albums'); 
   emitNeuralUpdate('ALBUMS', { userId: a.userId }); 
   return a; 
 }
@@ -290,7 +348,7 @@ export async function updateAlbum(id: string, uid: string, up: Partial<Album>) {
   const idx = CACHE.albums.findIndex(a => a.id === id && a.userId === uid);
   if (idx === -1) return null;
   CACHE.albums[idx] = { ...CACHE.albums[idx], ...up };
-  syncToDisk('albums');
+  await syncToDisk('albums');
   emitNeuralUpdate('ALBUMS', { userId: uid });
   return CACHE.albums[idx];
 }
@@ -300,7 +358,7 @@ export async function deleteAlbum(id: string, uid: string) {
   const findChildren = (pid: string) => CACHE.albums.filter(a => a.parentId === pid).forEach(c => { toDel.add(c.id); findChildren(c.id); });
   findChildren(id);
   CACHE.albums = CACHE.albums.filter(a => !(a.userId === uid && toDel.has(a.id)));
-  syncToDisk('albums');
+  await syncToDisk('albums');
   emitNeuralUpdate('ALBUMS', { userId: uid });
   return Array.from(toDel);
 }
@@ -311,7 +369,7 @@ export async function unlockAchievement(uid: string, bid: string) {
   await ensureDirectories();
   if (CACHE.achievements.some(a => a.userId === uid && a.badgeId === bid)) return false;
   CACHE.achievements.push({ id: Math.random().toString(36).substring(7), userId: uid, badgeId: bid, unlockedAt: new Date().toISOString() });
-  syncToDisk('achievements');
+  await syncToDisk('achievements');
   emitNeuralUpdate('ACHIEVEMENTS', { userId: uid });
   return true;
 }
@@ -337,7 +395,7 @@ export async function clearAllSharedAccess(id: string, uid: string) {
   if (midx > -1) { CACHE.media[midx].sharedWith = []; CACHE.media[midx].sharedPermissions = {}; changed = true; }
   const aidx = CACHE.albums.findIndex(a => a.id === id && a.userId === uid);
   if (aidx > -1) { CACHE.albums[aidx].sharedWith = []; CACHE.albums[aidx].isPublic = false; changed = true; }
-  if (changed) { syncToDisk('media'); syncToDisk('albums'); emitNeuralUpdate('SYSTEM', { userId: uid }); }
+  if (changed) { await syncToDisk('media'); await syncToDisk('albums'); emitNeuralUpdate('SYSTEM', { userId: uid }); }
   return changed;
 }
 
@@ -346,9 +404,8 @@ export async function getAdminMetrics() {
   await ensureDirectories();
   
   const multimediaSize = CACHE.media.reduce((acc, m) => acc + (m.size || 0), 0);
-  const databaseSize = JSON.stringify(CACHE).length; // Aproximación por RAM
-  
-  const projectBaseSize = 150 * 1024 * 1024; // 150MB estimados
+  const databaseSize = JSON.stringify(CACHE).length; 
+  const projectBaseSize = 150 * 1024 * 1024; 
   
   const usersStats = CACHE.users.map(u => {
     const userMedia = CACHE.media.filter(m => m.userId === u.id);

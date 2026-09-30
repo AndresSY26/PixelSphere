@@ -4,11 +4,10 @@
   "version": "12.6.0",
   "private": true,
   "scripts": {
-    "preinstall": "rm -rf .next node_modules/.cache .turbo",
-    "dev": "rm -rf .next && next dev --turbopack -p 9002",
+    "dev": "next dev -p 3000",
     "genkit:dev": "genkit start -- tsx src/ai/dev.ts",
     "genkit:watch": "genkit start -- tsx --watch src/ai/dev.ts",
-    "build": "NODE_ENV=production next build",
+    "build": "next build",
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit"

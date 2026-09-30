@@ -92,6 +92,7 @@ export default function TrashPage() {
       setMedia(prev => prev.filter(m => m.id !== id));
       toast({ title: "Activo Restaurado", description: "El archivo ha vuelto a su ubicación original." });
     } catch (e) {
+      console.error("Error al restaurar medio de la papelera:", e);
       toast({ title: "Error", variant: "destructive" });
     } finally {
       setIsProcessing(false);
@@ -106,6 +107,7 @@ export default function TrashPage() {
       setMedia(prev => prev.filter(m => m.id !== id));
       toast({ title: "Purga Física Completada", description: "El activo ha sido eliminado permanentemente del disco." });
     } catch (e) {
+      console.error("Error al purgar medio permanentemente:", e);
       toast({ title: "Error", variant: "destructive" });
     } finally {
       setIsProcessing(false);
@@ -122,6 +124,7 @@ export default function TrashPage() {
       setIsSelectionMode(false);
       toast({ title: "Restauración Masiva Exitosa" });
     } catch (e) {
+      console.error("Error en restauración masiva de papelera:", e);
       toast({ title: "Error", variant: "destructive" });
     } finally {
       setIsProcessing(false);
@@ -138,6 +141,7 @@ export default function TrashPage() {
       setIsSelectionMode(false);
       toast({ title: "Purga Masiva Completada" });
     } catch (e) {
+      console.error("Error en eliminación permanente masiva:", e);
       toast({ title: "Error", variant: "destructive" });
     } finally {
       setIsProcessing(false);
@@ -154,6 +158,7 @@ export default function TrashPage() {
       setConfirmEmptyTrash(false);
       toast({ title: "Papelera Vaciada", description: "Toda la infraestructura de residuos ha sido purgada." });
     } catch (e) {
+      console.error("Error al vaciar papelera:", e);
       toast({ title: "Error", variant: "destructive" });
     } finally {
       setIsProcessing(false);

@@ -30,7 +30,8 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   // Respondemos con el recurso o vamos a la red
   event.respondWith(
-    fetch(event.request).catch(() => {
+    fetch(event.request).catch((err) => {
+      console.error('Service Worker: Fallo en fetch a la red, recurriendo a cache:', err);
       return caches.match(event.request);
     })
   );

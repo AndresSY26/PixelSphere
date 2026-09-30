@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { getAdminMetrics, getUsers } from '@/lib/storage';
+import { getAdminMetrics, getUsers, updateUserFilterPreferences } from '@/lib/storage';
 import { User } from '@/lib/types';
 import { 
   ShieldAlert, 
@@ -95,8 +95,9 @@ export default function AdminConsolePage() {
           return;
         }
 
+        // Sincronización proactiva de sesión local si el rol cambió en el servidor
         if (currentUser.role !== 'admin') {
-          const updatedSession = { ...currentUser, role: 'admin' as const };
+          const updatedSession = { ...currentUser, role: 'admin' as const, is2FAEnabled: false };
           localStorage.setItem('ps_active_session', JSON.stringify(updatedSession));
           setUser(updatedSession);
         } else {

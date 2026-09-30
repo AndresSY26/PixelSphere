@@ -101,6 +101,7 @@ export default function WorldPage() {
         toast({ variant: "destructive", title: "Sin Resultados", description: "No se encontró esa ubicación en la red." });
       }
     } catch (error) {
+      console.error("Error al buscar coordenadas de ubicación:", error);
       toast({ variant: "destructive", title: "Falla de Red", description: "Error al buscar coordenadas." });
     } finally {
       setIsSearchingLocation(false);
