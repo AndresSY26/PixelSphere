@@ -51,8 +51,6 @@ El proyecto está estructurado modularmente para maximizar la separación de res
 ```plaintext
 PixelSphere/
 ├── data/                    # Persistencia atómica local en archivos JSON estructurados
-├── docs/
-│   └── blueprint.md         # Documento de especificación y diseño original
 ├── public/
 │   ├── sw.js                # Service Worker para capacidades PWA y caché offline
 │   └── uploads/             # Directorio de almacenamiento de medios físicos
@@ -75,7 +73,6 @@ PixelSphere/
 │   │   ├── pwa-installer.tsx
 │   │   ├── upload-dialog.tsx
 │   │   └── world-map.tsx
-│   ├── firebase/            # Proveedores y conectores a servicios de Firebase
 │   ├── hooks/               # Custom hooks de React (use-neural-sync, use-toast, use-mobile)
 │   └── lib/                 # Lógica de dominio y utilidades
 │       ├── neural-events.ts # Emisor centralizado de eventos SSE
@@ -83,7 +80,6 @@ PixelSphere/
 │       ├── storage.ts       # Capa de abstracción de datos para el cliente y servidor
 │       ├── types.ts         # Definiciones TypeScript de entidades y contratos
 │       └── utils.ts         # Funciones utilitarias generales
-├── apphosting.yaml          # Configuración para despliegue en Firebase App Hosting
 ├── components.json          # Configuración del CLI de ShadCN UI
 ├── next.config.ts           # Configuración de Next.js (Standalone, dominios de imagen, etc.)
 ├── package.json             # Dependencias del proyecto y scripts de ejecución
@@ -140,29 +136,16 @@ PixelSphere/
 
 ---
 
-## 🚢 Despliegue en Producción
+## 🚢 Despliegue en Producción (Modo Standalone & Docker)
 
-### 1. Despliegue con Docker / Standalone
 El archivo `next.config.ts` incluye la instrucción:
 ```typescript
 output: "standalone"
 ```
-Al ejecutar `npm run build`, Next.js empaqueta automáticamente el servidor y sus dependencias mínimas en `.next/standalone`, lo que permite crear imágenes Docker de tamaño ultra reducido o ejecutar directamente:
+Al ejecutar `npm run build`, Next.js empaqueta automáticamente el servidor y sus dependencias mínimas en `.next/standalone`, lo que permite crear imágenes Docker de tamaño ultra reducido o ejecutar directamente en cualquier servidor:
 ```bash
 node .next/standalone/server.js
 ```
-
-### 2. Firebase App Hosting
-El repositorio incluye el archivo `apphosting.yaml` preconfigurado:
-```yaml
-runConfig:
-  minInstances: 0
-  maxInstances: 10
-  concurrency: 80
-  cpu: 1
-  memoryMiB: 1024
-```
-Simplemente conecta el repositorio de GitHub con el panel de Firebase App Hosting para habilitar CI/CD automatizado en cada `push` a la rama `main`.
 
 ---
 

@@ -43,7 +43,6 @@
     "dotenv": "^16.5.0",
     "embla-carousel-react": "^8.6.0",
     "file-saver": "^2.0.5",
-    "firebase": "^11.9.1",
     "genkit": "^1.28.0",
     "jszip": "^3.10.1",
     "leaflet": "^1.9.4",
