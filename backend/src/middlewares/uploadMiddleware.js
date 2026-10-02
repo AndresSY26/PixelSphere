@@ -28,3 +28,11 @@ export const upload = multer({
     fileSize: 1024 * 1024 * 1024 // 1GB por archivo
   }
 });
+
+export const uploadChunk = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 100 * 1024 * 1024 // 100MB por fragmento
+  }
+});
+

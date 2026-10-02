@@ -3,6 +3,7 @@ import {
   listMedia, 
   getMediaById, 
   uploadMedia, 
+  handleChunkedUpload,
   streamVideo, 
   updateMedia, 
   deleteMedia, 
@@ -11,12 +12,12 @@ import {
   recordView,
   saveProgress
 } from '../controllers/mediaController.js';
-import { upload } from '../middlewares/uploadMiddleware.js';
+import { upload, uploadChunk } from '../middlewares/uploadMiddleware.js';
 
 const router = Router();
 
 router.get('/', listMedia);
-router.post('/upload', upload.single('file'), uploadMedia);
+router.post('/upload', uploadChunk.any(), handleChunkedUpload);
 router.post('/delete-multiple', deleteMultiple);
 router.post('/restore-multiple', restoreMultiple);
 router.get('/:id', getMediaById);

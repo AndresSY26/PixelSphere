@@ -138,6 +138,119 @@ export async function uploadMedia(req, res) {
 }
 
 /**
+ * INGESTA POR FRAGMENTOS (CHUNKED UPLOAD) RESILIENTE
+ */
+export async function handleChunkedUpload(req, res) {
+  try {
+    const chunkFile = req.file || (req.files && (req.files[0] || req.files['chunk']?.[0] || req.files['file']?.[0]));
+
+    const {
+      userId,
+      filename,
+      fileId: reqFileId,
+      chunkIndex: rawChunkIndex,
+      totalChunks: rawTotalChunks,
+      isAdult,
+      filesize,
+      contentType,
+      lat,
+      lng,
+      cameraSource,
+      thumbnailB64
+    } = req.body;
+
+    if (!userId || !filename || !chunkFile) {
+      return res.status(400).json({ error: 'Faltan metadatos o fragmento de archivo.' });
+    }
+
+    const fileId = reqFileId || Math.random().toString(36).substring(2, 11);
+    const chunkIndex = parseInt(rawChunkIndex ?? '0', 10);
+    const totalChunks = parseInt(rawTotalChunks ?? '1', 10);
+    const isAdultContent = isAdult === 'true' || isAdult === true;
+    const totalSize = parseInt(filesize ?? '0', 10) || chunkFile.size;
+    const detectedType = (contentType || chunkFile.mimetype || '').startsWith('video/') ? 'video' : 'image';
+
+    const userUploadPath = path.join(UPLOADS_DIR, userId, detectedType);
+    await fs.promises.mkdir(userUploadPath, { recursive: true });
+
+    const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_').toLowerCase();
+    const cleanFilename = `${fileId}_${safeName}`;
+    const filePath = path.join(userUploadPath, cleanFilename);
+    const publicPath = `/uploads/${userId}/${detectedType}/${cleanFilename}`;
+
+    if (chunkIndex === 0) {
+      await fs.promises.writeFile(filePath, chunkFile.buffer);
+    } else {
+      await fs.promises.appendFile(filePath, chunkFile.buffer);
+    }
+
+    if (chunkIndex >= totalChunks - 1) {
+      let finalThumbnailUrl = detectedType === 'video' ? `${publicPath}#t=0.5` : publicPath;
+      if (thumbnailB64 && detectedType === 'video') {
+        try {
+          const thumbDir = path.join(UPLOADS_DIR, userId, 'thumbnails');
+          await fs.promises.mkdir(thumbDir, { recursive: true });
+          const thumbName = `thumb_${fileId}.jpg`;
+          const base64Data = thumbnailB64.includes(',') ? thumbnailB64.split(',')[1] : thumbnailB64;
+          await fs.promises.writeFile(path.join(thumbDir, thumbName), Buffer.from(base64Data, 'base64'));
+          finalThumbnailUrl = `/uploads/${userId}/thumbnails/${thumbName}`;
+        } catch (thumbErr) {
+          console.warn('[ChunkUpload] Error guardando thumbnail:', thumbErr.message);
+        }
+      }
+
+      const newEntry = {
+        id: fileId,
+        userId,
+        type: detectedType,
+        url: publicPath,
+        path: publicPath,
+        thumbnailUrl: finalThumbnailUrl,
+        filename,
+        title: filename,
+        size: totalSize,
+        width: 1920,
+        height: 1080,
+        mimeType: contentType || chunkFile.mimetype || (detectedType === 'video' ? 'video/mp4' : 'image/jpeg'),
+        tags: [detectedType, 'upload'],
+        isPrivate: false,
+        isAdultContent,
+        latitude: lat ? parseFloat(lat) : undefined,
+        longitude: lng ? parseFloat(lng) : undefined,
+        cameraSource: cameraSource || undefined,
+        createdAt: new Date().toISOString()
+      };
+
+      // Si es imagen, intentar auto-etiquetado con Gemini
+      if (detectedType === 'image') {
+        try {
+          const fileBuffer = await fs.promises.readFile(filePath);
+          const dataUri = `data:${newEntry.mimeType};base64,${fileBuffer.toString('base64')}`;
+          const aiResult = await autoTagImage(dataUri);
+          if (aiResult?.tags?.length) {
+            newEntry.tags = Array.from(new Set([...newEntry.tags, ...aiResult.tags]));
+          }
+          if (aiResult?.description) {
+            newEntry.description = aiResult.description;
+          }
+        } catch (aiErr) {
+          // Ignorar fallo de Gemini opcional
+        }
+      }
+
+      await saveMediaMetadata(newEntry);
+      await unlockAchievement(userId, 'first_upload');
+      return res.status(200).json(newEntry);
+    }
+
+    return res.status(200).json({ status: 'chunk_received', index: chunkIndex });
+  } catch (error) {
+    console.error('[MediaController] Error en subida por fragmentos:', error);
+    return res.status(500).json({ error: 'Falla al procesar el fragmento.', details: error.message });
+  }
+}
+
+/**
  * STREAMING HTTP 206 (Range headers) PARA REPRODUCCIÓN FLUIDA DE VIDEO
  */
 export async function streamVideo(req, res) {
