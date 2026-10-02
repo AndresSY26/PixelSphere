@@ -11,7 +11,8 @@ export function addStreamClient(res) {
 }
 
 export function broadcastNeuralEvent(event, data) {
-  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  const messageData = JSON.stringify({ channel: event, data });
+  const payload = `data: ${messageData}\n\n`;
   for (const client of clients) {
     try {
       client.write(payload);

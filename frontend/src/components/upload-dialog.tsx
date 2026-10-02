@@ -318,10 +318,19 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
     if (completedCount > 0) {
       await unlockAchievement(user.id, 'first_upload');
       toast({ title: "Ingesta Completa", description: `${completedCount} archivos geolocalizados.` });
+      window.dispatchEvent(new CustomEvent('neural-update', { 
+        detail: { channel: 'MEDIA', data: { userId: user.id } } 
+      }));
     }
     setIsUploading(false);
     if (completedCount === itemsToUpload.length) {
-      setTimeout(() => { onUploadSuccess?.(); handleClose(); }, 1500);
+      setTimeout(() => { 
+        onUploadSuccess?.(); 
+        window.dispatchEvent(new CustomEvent('neural-update', { 
+          detail: { channel: 'MEDIA', data: { userId: user.id } } 
+        }));
+        handleClose(); 
+      }, 800);
     }
   };
 

@@ -393,7 +393,18 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </header>
         <main className="flex-1 overflow-y-auto scrollbar-hide p-6">{children}</main>
       </div>
-      {user && <UploadDialog isOpen={isUploadOpen} onClose={() => setIsUploadOpen(false)} user={user} />}
+      {user && (
+        <UploadDialog 
+          isOpen={isUploadOpen} 
+          onClose={() => setIsUploadOpen(false)} 
+          user={user} 
+          onUploadSuccess={() => {
+            window.dispatchEvent(new CustomEvent('neural-update', { 
+              detail: { channel: 'MEDIA', data: { userId: user.id } } 
+            }));
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -38,8 +38,13 @@ app.use(cors({
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Servir archivos estáticos subidos físicamente
-app.use('/uploads', express.static(UPLOADS_DIR));
+// Servir archivos estáticos subidos físicamente con headers permisivos
+app.use('/uploads', (req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+  next();
+}, express.static(UPLOADS_DIR));
 
 // Rutas de API REST
 app.use('/api', apiRouter);
