@@ -12,14 +12,24 @@ import { User } from '@/lib/types';
 export function useNeuralSync(user: User | null) {
   const { toast } = useToast();
   const eventSourceRef = useRef<EventSource | null>(null);
+  const userId = user?.id;
+  const userIdRef = useRef(userId);
+  userIdRef.current = userId;
 
   useEffect(() => {
-    if (!user) {
-      if (eventSourceRef.current) { eventSourceRef.current.close(); eventSourceRef.current = null; }
+    if (!userId) {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+        eventSourceRef.current = null;
+      }
       return;
     }
 
+    let isCancelled = false;
+    let retryTimer: NodeJS.Timeout | null = null;
+
     const connect = () => {
+      if (isCancelled) return;
       if (eventSourceRef.current && eventSourceRef.current.readyState !== 2) return;
       
       const es = new EventSource('/api/neural-stream');
@@ -31,7 +41,7 @@ export function useNeuralSync(user: User | null) {
           if (payload.type === 'heartbeat') return;
 
           // Filtrar por usuario o broadcast global
-          if (payload.data?.userId && payload.data.userId !== user.id) return;
+          if (payload.data?.userId && payload.data.userId !== userIdRef.current) return;
 
           // Disparar evento para componentes locales
           window.dispatchEvent(new CustomEvent('neural-update', { detail: payload }));
@@ -44,13 +54,23 @@ export function useNeuralSync(user: User | null) {
 
       es.onerror = () => {
         es.close();
-        setTimeout(connect, 3000);
+        if (!isCancelled) {
+          retryTimer = setTimeout(connect, 3000);
+        }
       };
     };
 
     connect();
-    return () => { if (eventSourceRef.current) { eventSourceRef.current.close(); eventSourceRef.current = null; } };
-  }, [user, toast]);
+
+    return () => {
+      isCancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+        eventSourceRef.current = null;
+      }
+    };
+  }, [userId]);
 
   return null;
 }

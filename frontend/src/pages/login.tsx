@@ -49,7 +49,7 @@ function AuthContent() {
     if (sessionData) {
       router.replace('/dashboard');
     }
-  }, [router]);
+  }, []);
 
   useEffect(() => {
     const mode = searchParams.get('mode');

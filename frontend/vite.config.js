@@ -11,6 +11,7 @@ export default defineConfig({
       'next/link': path.resolve(__dirname, './src/lib/shims/next-link.jsx'),
       'next/image': path.resolve(__dirname, './src/lib/shims/next-image.jsx'),
       'next/navigation': path.resolve(__dirname, './src/lib/shims/next-navigation.jsx'),
+      'next/dynamic': path.resolve(__dirname, './src/lib/shims/next-dynamic.jsx'),
     },
   },
   server: {

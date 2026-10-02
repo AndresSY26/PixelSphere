@@ -115,7 +115,7 @@ export default function AdminConsolePage() {
       }
     }
     initAdmin();
-  }, [router]);
+  }, []);
 
   const filteredUsers = useMemo(() => {
     if (!metrics) return [];

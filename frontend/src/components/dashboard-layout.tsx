@@ -226,7 +226,19 @@ const SidebarContent = ({
 };
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<User | null>(() => {
+    if (typeof window !== 'undefined') {
+      const sessionData = localStorage.getItem('ps_active_session');
+      if (sessionData) {
+        try {
+          return JSON.parse(sessionData);
+        } catch (e) {
+          return null;
+        }
+      }
+    }
+    return null;
+  });
   const [albums, setAlbums] = useState<Album[]>([]);
   const [mounted, setMounted] = useState(false);
   const [isSidebarOpen, setSidebarOpen] = useState(true);
@@ -252,20 +264,28 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     setMounted(true);
     const sessionData = localStorage.getItem('ps_active_session');
     if (sessionData) {
-      const u = JSON.parse(sessionData);
-      setUser(u);
-      getAlbumsByUser(u.id).then(setAlbums);
+      try {
+        const u = JSON.parse(sessionData);
+        setUser(u);
+        getAlbumsByUser(u.id).then(setAlbums);
+      } catch (e) {
+        router.push('/login');
+      }
     } else {
       router.push('/login');
     }
 
     const onNeural = () => {
       const data = localStorage.getItem('ps_active_session');
-      if (data) getAlbumsByUser(JSON.parse(data).id).then(setAlbums);
+      if (data) {
+        try {
+          getAlbumsByUser(JSON.parse(data).id).then(setAlbums);
+        } catch (e) {}
+      }
     };
     window.addEventListener('neural-update', onNeural);
     return () => window.removeEventListener('neural-update', onNeural);
-  }, [router]);
+  }, []);
 
   const onDropOnAlbum = async (e: React.DragEvent, albumId: string) => {
     e.preventDefault();
