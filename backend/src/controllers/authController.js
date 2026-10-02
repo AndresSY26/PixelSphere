@@ -16,8 +16,8 @@ import {
 
 export async function register(req, res) {
   try {
-    const { username, email, password } = req.body;
-    if (!username || !email || !password) {
+    const { username, email, password, passwordHash } = req.body;
+    if (!username || !email || (!password && !passwordHash)) {
       return res.status(400).json({ error: 'Todos los campos son obligatorios.' });
     }
 
@@ -30,30 +30,37 @@ export async function register(req, res) {
     const isFirstUser = allUsers.length === 0;
 
     const newUser = {
-      id: Math.random().toString(36).substring(2, 11),
+      id: req.body.id || Math.random().toString(36).substring(2, 11),
       username,
       email: email.toLowerCase().trim(),
-      passwordHash: hashPassword(password),
-      role: isFirstUser ? 'admin' : 'user',
-      avatarUrl: `https://api.dicebear.com/7.x/bottts/svg?seed=${username}`,
-      createdAt: new Date().toISOString(),
+      passwordHash: passwordHash || hashPassword(password),
+      role: isFirstUser ? 'admin' : (req.body.role || 'user'),
+      avatarUrl: req.body.avatarUrl || `https://api.dicebear.com/7.x/bottts/svg?seed=${username}`,
+      createdAt: req.body.createdAt || new Date().toISOString(),
       is2FAEnabled: false,
-      storageQuota: 10 * 1024 * 1024 * 1024, // 10 GB
+      storageQuota: 10 * 1024 * 1024 * 1024,
       storageUsed: 0,
-      settings: {
-        theme: 'dark',
-        autoTagging: true,
-        highQualityStreaming: true,
-        allowPublicSharing: true
+      settings: req.body.settings || {
+        accentColor: '#7373F0',
+        isDarkMode: true,
+        interfaceDensity: 'default',
+        glassIntensity: 10,
+        backgroundTheme: 'classic',
+        borderRadius: 12,
+        reducedMotion: false,
+        videoAutoplay: true,
+        lowResPreviews: false,
+        gpuAcceleration: true,
+        aiBackgroundAnalysis: true,
+        vaultAutoLockEnabled: true,
+        vaultAutoLockTime: 60
       }
     };
 
     const saved = await saveUser(newUser);
     await unlockAchievement(saved.id, 'first_signup');
 
-    // Sanitizar respuesta (no enviar passwordHash)
-    const { passwordHash, twoFASecret, ...safeUser } = saved;
-    return res.status(201).json({ success: true, user: safeUser });
+    return res.status(201).json({ success: true, user: saved });
   } catch (error) {
     console.error('[AuthController] Error en registro:', error);
     return res.status(500).json({ error: 'Error interno en el servidor.' });
@@ -62,8 +69,8 @@ export async function register(req, res) {
 
 export async function login(req, res) {
   try {
-    const { email, password, twoFactorCode } = req.body;
-    if (!email || !password) {
+    const { email, password, passwordHash, twoFactorCode } = req.body;
+    if (!email || (!password && !passwordHash)) {
       return res.status(400).json({ error: 'Email y contraseña requeridos.' });
     }
 
@@ -72,8 +79,10 @@ export async function login(req, res) {
       return res.status(401).json({ error: 'Credenciales inválidas.' });
     }
 
-    const hashedPassword = hashPassword(password);
-    if (user.passwordHash !== hashedPassword) {
+    const targetHash = passwordHash || (password ? hashPassword(password) : null);
+    const isMatch = (user.passwordHash === targetHash) || (password && user.passwordHash === password);
+
+    if (!isMatch) {
       return res.status(401).json({ error: 'Credenciales inválidas.' });
     }
 
@@ -91,11 +100,45 @@ export async function login(req, res) {
     const userAgent = req.headers['user-agent'] || '';
     const updatedUser = await recordSession(user.id, userAgent);
 
-    const { passwordHash, twoFASecret, ...safeUser } = updatedUser || user;
-    return res.status(200).json({ success: true, user: safeUser });
+    return res.status(200).json({ success: true, user: updatedUser || user });
   } catch (error) {
     console.error('[AuthController] Error en login:', error);
     return res.status(500).json({ error: 'Error interno en el servidor.' });
+  }
+}
+
+export async function findUser(req, res) {
+  try {
+    const { email, username } = req.query;
+    let user = null;
+    if (email) {
+      user = await findUserByEmail(email);
+    }
+    if (!user && username) {
+      const all = await getUsers();
+      user = all.find(u => u.username.toLowerCase() === username.toLowerCase());
+    }
+    if (!user) {
+      return res.json({ found: false, user: null });
+    }
+    return res.json({ found: true, user });
+  } catch (error) {
+    console.error('[AuthController] Error en findUser:', error);
+    return res.status(500).json({ error: 'Error en búsqueda de usuario.' });
+  }
+}
+
+export async function handleSaveUser(req, res) {
+  try {
+    const userData = req.body;
+    if (!userData || !userData.email) {
+      return res.status(400).json({ error: 'Datos de usuario requeridos.' });
+    }
+    const saved = await saveUser(userData);
+    return res.json({ success: true, user: saved });
+  } catch (error) {
+    console.error('[AuthController] Error en handleSaveUser:', error);
+    return res.status(500).json({ error: 'Error al guardar usuario.' });
   }
 }
 
@@ -109,7 +152,6 @@ export async function setup2FA(req, res) {
     const otpAuthUrl = authenticator.keyuri(user.email, 'PixelSphere', secret);
     const qrCodeDataUrl = await QRCode.toDataURL(otpAuthUrl);
 
-    // Guardar temporalmente el secret en el usuario
     user.tempTwoFASecret = secret;
     await saveUser(user);
 
@@ -165,10 +207,12 @@ export async function disable2FA(req, res) {
 export async function getProfile(req, res) {
   try {
     const { id } = req.params;
-    const user = await findUserById(id);
+    let user = await findUserById(id);
+    if (!user) {
+      user = await findUserByEmail(id);
+    }
     if (!user) return res.status(404).json({ error: 'Usuario no encontrado.' });
-    const { passwordHash, twoFASecret, ...safeUser } = user;
-    return res.json(safeUser);
+    return res.json(user);
   } catch (error) {
     console.error('[AuthController] Error en getProfile:', error);
     return res.status(500).json({ error: 'Error al obtener perfil.' });
@@ -178,18 +222,17 @@ export async function getProfile(req, res) {
 export async function updateProfile(req, res) {
   try {
     const { id } = req.params;
-    const user = await findUserById(id);
+    let user = await findUserById(id);
+    if (!user) {
+      user = await findUserByEmail(id);
+    }
     if (!user) return res.status(404).json({ error: 'Usuario no encontrado.' });
 
-    const { username, avatarUrl, settings, bio } = req.body;
-    if (username) user.username = username;
-    if (avatarUrl) user.avatarUrl = avatarUrl;
-    if (settings) user.settings = { ...user.settings, ...settings };
-    if (bio !== undefined) user.bio = bio;
+    const updates = req.body;
+    const merged = { ...user, ...updates };
 
-    const saved = await saveUser(user);
-    const { passwordHash, twoFASecret, ...safeUser } = saved;
-    return res.json({ success: true, user: safeUser });
+    const saved = await saveUser(merged);
+    return res.json({ success: true, user: saved });
   } catch (error) {
     console.error('[AuthController] Error en updateProfile:', error);
     return res.status(500).json({ error: 'Error al actualizar perfil.' });

@@ -40,6 +40,11 @@ export const api = {
     setup2FA: (userId) => request('/auth/2fa/setup', { method: 'POST', body: JSON.stringify({ userId }) }),
     confirm2FA: (userId, code) => request('/auth/2fa/confirm', { method: 'POST', body: JSON.stringify({ userId, code }) }),
     disable2FA: (userId) => request('/auth/2fa/disable', { method: 'POST', body: JSON.stringify({ userId }) }),
+    findUser: (params) => {
+      const search = new URLSearchParams(params).toString();
+      return request(`/auth/find?${search}`);
+    },
+    saveUser: (user) => request('/auth/save', { method: 'POST', body: JSON.stringify(user) }),
     getProfile: (userId) => request(`/auth/profile/${userId}`),
     updateProfile: (userId, data) => request(`/auth/profile/${userId}`, { method: 'PUT', body: JSON.stringify(data) }),
   },

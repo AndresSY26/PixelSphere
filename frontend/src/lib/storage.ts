@@ -48,12 +48,23 @@ export async function registerUser(username, email, password) {
 }
 
 export async function findUserByEmail(email) {
-  const users = await api.auth.getProfile(email).catch(() => null);
-  return users;
+  if (!email) return null;
+  try {
+    const res = await api.auth.findUser({ email: email.trim().toLowerCase() });
+    return res.found ? res.user : null;
+  } catch (e) {
+    return null;
+  }
 }
 
 export async function findUserByUsername(username) {
-  return null;
+  if (!username) return null;
+  try {
+    const res = await api.auth.findUser({ username: username.trim().toLowerCase() });
+    return res.found ? res.user : null;
+  } catch (e) {
+    return null;
+  }
 }
 
 export async function recordInteraction(senderId, recipientId) {
@@ -65,16 +76,19 @@ export async function getFrequentContacts(uid) {
 }
 
 export async function getUsers() {
-  // En backend no hay endpoint directo público para listar todos los usuarios por privacidad,
-  // pero el dashboard admin puede obtener estadísticas.
   const stats = await api.stats.getAdmin().catch(() => ({ usersStats: [] }));
   return stats.usersStats || [];
 }
 
 export async function saveUser(user) {
-  const updated = await api.auth.updateProfile(user.id, user);
-  if (updated.user) setStoredUser(updated.user);
-  return updated.user || user;
+  try {
+    const res = await api.auth.saveUser(user);
+    if (res.user) setStoredUser(res.user);
+    return res.user || user;
+  } catch (e) {
+    console.error('Error al guardar usuario:', e);
+    throw e;
+  }
 }
 
 export async function recordSession(uid, ua) {
@@ -270,4 +284,9 @@ export async function saveAvatarFile(uid, b64) {
 // Helpers de cifrado en cliente (bóveda)
 export async function encrypt(t) { return t; }
 export async function decrypt(t) { return t; }
-export async function hashPassword(p) { return p; }
+export async function hashPassword(password) {
+  if (!password) return '';
+  const msgUint8 = new TextEncoder().encode(password.trim());
+  const hashBuffer = await crypto.subtle.digest('SHA-512', msgUint8);
+  return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
