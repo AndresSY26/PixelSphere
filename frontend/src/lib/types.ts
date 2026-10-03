@@ -16,6 +16,8 @@ export interface User {
   twoFASecret?: string;
   biometricEnabled?: boolean;
   biometricCredentialId?: string;
+  authProvider?: 'local' | 'google';
+  isGoogleLinked?: boolean;
   createdAt: string;
   recentRecipients?: string[];
   sessions?: Session[];

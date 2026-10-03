@@ -1,16 +1,23 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 
 /**
- * SERVICIO DE INTELIGENCIA ARTIFICIAL GEMINI v1.0
+ * SERVICIO DE INTELIGENCIA ARTIFICIAL GEMINI v2.0
  * Ejecuta flujos de auto-etiquetado y edición generativa con modelos Gemini de Google.
  */
 
 function getGeminiClient() {
-  const apiKey = process.env.GOOGLE_GENAI_API_KEY || process.env.GEMINI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY;
   if (!apiKey) {
-    throw new Error('GOOGLE_GENAI_API_KEY no está configurada en las variables de entorno.');
+    throw new Error('GEMINI_API_KEY no está configurada en las variables de entorno.');
   }
-  return new GoogleGenerativeAI(apiKey);
+  return new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      },
+    },
+  });
 }
 
 function parseDataUri(dataUri) {
@@ -30,8 +37,6 @@ function parseDataUri(dataUri) {
 export async function autoTagImage(photoDataUri, currentTags = [], currentDescription = '') {
   try {
     const ai = getGeminiClient();
-    const model = ai.getGenerativeModel({ model: 'gemini-1.5-flash' });
-
     const { mimeType, data } = parseDataUri(photoDataUri);
 
     const prompt = `Analiza detalladamente esta imagen multimedia.
@@ -45,17 +50,23 @@ Descripción actual: ${currentDescription || 'Ninguna'}
 Responde ÚNICAMENTE con el objeto JSON sin bloques markdown adicionales:
 {"tags": ["etiqueta1", "etiqueta2"], "description": "Texto descriptivo..."}`;
 
-    const result = await model.generateContent([
-      prompt,
-      {
-        inlineData: {
-          mimeType,
-          data
-        }
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents: [
+        {
+          inlineData: {
+            mimeType,
+            data
+          }
+        },
+        prompt
+      ],
+      config: {
+        responseMimeType: 'application/json'
       }
-    ]);
+    });
 
-    const text = result.response.text();
+    const text = response.text || '{}';
     // Limpieza de formato markdown si lo devuelve con ```json
     const cleanedJson = text.replace(/```json/gi, '').replace(/```/g, '').trim();
     const parsed = JSON.parse(cleanedJson);
@@ -79,29 +90,33 @@ Responde ÚNICAMENTE con el objeto JSON sin bloques markdown adicionales:
 export async function editImageWithPrompt(photoDataUri, userPrompt) {
   try {
     const ai = getGeminiClient();
-    const model = ai.getGenerativeModel({ model: 'gemini-1.5-flash' });
-
     const { mimeType, data } = parseDataUri(photoDataUri);
 
     const systemPrompt = `Eres un asistente de retoque y arte visual.
 Analiza la siguiente imagen y las instrucciones del usuario: "${userPrompt}".
 Proporciona recomendaciones estilísticas y genera un resumen de la transformación visual solicitada.`;
 
-    const result = await model.generateContent([
-      systemPrompt,
-      {
-        inlineData: {
-          mimeType,
-          data
-        }
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents: [
+        {
+          inlineData: {
+            mimeType,
+            data
+          }
+        },
+        userPrompt
+      ],
+      config: {
+        systemInstruction: systemPrompt
       }
-    ]);
+    });
 
     // Retorna la imagen junto con los metadatos de transformación
     return {
       success: true,
       editedPhotoDataUri: photoDataUri, // Preserva la imagen original con metadatos procesados
-      analysis: result.response.text()
+      analysis: response.text || ''
     };
   } catch (error) {
     console.error('[GeminiService] Error en edición generativa:', error);

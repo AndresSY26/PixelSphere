@@ -109,6 +109,13 @@ export const MediaCard = memo(({
     onClick(item);
   };
 
+  const isImageThumbnail = item.thumbnailUrl && (
+    item.thumbnailUrl.startsWith('data:image') || 
+    item.thumbnailUrl.includes('/thumbnails/') || 
+    /\.(jpg|jpeg|png|webp|gif|bmp|avif)$/i.test(item.thumbnailUrl.split('?')[0].split('#')[0])
+  );
+  const [imgError, setImgError] = useState(false);
+
   if (viewMode === 'list') {
     return (
       <div 
@@ -121,10 +128,25 @@ export const MediaCard = memo(({
         )}
       >
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg overflow-hidden relative bg-black/40">
+          <div className="w-10 h-10 rounded-lg overflow-hidden relative bg-black/40 shrink-0">
             {isInView && (
               item.type === 'video' ? (
-                <img src={item.thumbnailUrl} className={cn("w-full h-full object-cover", item.isAdultContent && "blur-md")} loading="lazy" />
+                isImageThumbnail && !imgError ? (
+                  <img 
+                    src={item.thumbnailUrl} 
+                    className={cn("w-full h-full object-cover", item.isAdultContent && "blur-md")} 
+                    loading="lazy" 
+                    onError={() => setImgError(true)}
+                  />
+                ) : (
+                  <video 
+                    src={item.url + '#t=0.5'} 
+                    preload="metadata" 
+                    muted 
+                    playsInline 
+                    className={cn("w-full h-full object-cover pointer-events-none", item.isAdultContent && "blur-md")} 
+                  />
+                )
               ) : (
                 <Image src={item.thumbnailUrl} alt="" fill sizes="40px" className={cn("object-cover", item.isAdultContent && "blur-md")} loading="lazy" />
               )
@@ -169,11 +191,22 @@ export const MediaCard = memo(({
         >
           {isInView && (
             item.type === 'video' ? (
-              <img 
-                src={item.thumbnailUrl} 
-                className={cn("w-full h-full object-cover transition-transform duration-500 group-hover:scale-110", item.isAdultContent && "blur-2xl opacity-40 scale-125")} 
-                loading="lazy"
-              />
+              isImageThumbnail && !imgError ? (
+                <img 
+                  src={item.thumbnailUrl} 
+                  className={cn("w-full h-full object-cover transition-transform duration-500 group-hover:scale-110", item.isAdultContent && "blur-2xl opacity-40 scale-125")} 
+                  loading="lazy"
+                  onError={() => setImgError(true)}
+                />
+              ) : (
+                <video 
+                  src={item.url + '#t=0.5'} 
+                  preload="metadata" 
+                  muted 
+                  playsInline 
+                  className={cn("w-full h-full object-cover transition-transform duration-500 group-hover:scale-110 pointer-events-none", item.isAdultContent && "blur-2xl opacity-40 scale-125")} 
+                />
+              )
             ) : (
               <Image 
                 src={item.thumbnailUrl} 

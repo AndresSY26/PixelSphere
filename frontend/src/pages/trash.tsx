@@ -7,7 +7,8 @@ import {
   restoreMedia, 
   restoreMultipleMedia, 
   deleteMedia, 
-  deleteMultipleMedia 
+  deleteMultipleMedia,
+  getStoredUser
 } from '@/lib/storage';
 import { Media, User } from '@/lib/types';
 import { 
@@ -42,7 +43,6 @@ import {
 } from "@/components/ui/dialog";
 import { useToast } from '@/hooks/use-toast';
 import { cn, formatRelativeDate } from '@/lib/utils';
-import Image from 'next/image';
 
 export default function TrashPage() {
   const [media, setMedia] = useState<Media[]>([]);
@@ -62,9 +62,20 @@ export default function TrashPage() {
   const loadData = useCallback(async () => {
     try {
       setLoading(true);
+      let currentUser: User | null = null;
       const sessionData = localStorage.getItem('ps_active_session');
       if (sessionData) {
-        const currentUser = JSON.parse(sessionData) as User;
+        try {
+          currentUser = JSON.parse(sessionData) as User;
+        } catch (e) {
+          currentUser = null;
+        }
+      }
+      if (!currentUser) {
+        currentUser = getStoredUser();
+      }
+
+      if (currentUser) {
         setUser(currentUser);
         const allMedia = await getMediaByUser(currentUser.id);
         setMedia(allMedia.filter(m => m.isDeleted === true));
@@ -285,11 +296,10 @@ export default function TrashPage() {
               >
                 {viewMode === 'grid' ? (
                   <>
-                    <Image 
-                      src={item.thumbnailUrl} 
+                    <img 
+                      src={item.thumbnailUrl || item.url} 
                       alt="" 
-                      fill 
-                      className={cn("object-cover opacity-40 grayscale group-hover:opacity-60 transition-all", item.isAdultContent && "blur-xl")} 
+                      className={cn("w-full h-full object-cover opacity-40 grayscale group-hover:opacity-60 transition-all", item.isAdultContent && "blur-xl")} 
                     />
                     <div className="absolute top-4 left-4 z-20">
                       <div className="bg-black/60 backdrop-blur-md px-2 py-1 rounded-lg border border-white/10 flex items-center gap-1.5">
@@ -335,8 +345,8 @@ export default function TrashPage() {
                 ) : (
                   <div className="flex items-center justify-between w-full">
                     <div className="flex items-center gap-4">
-                      <div className="w-12 h-12 rounded-xl bg-black overflow-hidden relative border border-white/10">
-                        <Image src={item.thumbnailUrl} alt="" fill className="object-cover opacity-40 grayscale" />
+                      <div className="w-12 h-12 rounded-xl bg-black overflow-hidden relative border border-white/10 shrink-0">
+                        <img src={item.thumbnailUrl || item.url} alt="" className="w-full h-full object-cover opacity-40 grayscale" />
                       </div>
                       <div>
                         <p className="font-bold text-sm text-white truncate max-w-[200px]">{item.filename}</p>

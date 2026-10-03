@@ -2,15 +2,33 @@
   "name": "pixelsphere",
   "version": "13.0.0",
   "private": true,
-  "description": "PixelSphere - Arquitectura desacoplada con Backend Node.js (JavaScript) y Frontend Vite + React",
+  "type": "module",
+  "description": "PixelSphere - Plataforma multimedia inteligente con IA generativa",
   "scripts": {
-    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
-    "dev:backend": "npm --prefix backend run dev",
-    "dev:frontend": "npm --prefix frontend run dev",
-    "build:frontend": "npm --prefix frontend run build",
-    "start:backend": "npm --prefix backend start"
+    "dev": "tsx server.ts",
+    "build": "npm --prefix frontend run build",
+    "start": "node server.ts"
+  },
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "dependencies": {
+    "@google/genai": "latest",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "firebase": "^12.19.0",
+    "multer": "^1.4.5-lts.1",
+    "otplib": "^12.0.1",
+    "qrcode": "^1.5.4",
+    "tsx": "^4.19.3"
   },
   "devDependencies": {
-    "concurrently": "^9.2.4"
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.17.19",
+    "typescript": "^5.7.3",
+    "vite": "^6.1.0"
   }
 }

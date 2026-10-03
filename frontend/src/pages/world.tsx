@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import DashboardLayout from '@/components/dashboard-layout';
-import { getMediaByUser } from '@/lib/storage';
+import { getMediaByUser, getMedia, getStoredUser } from '@/lib/storage';
 import { Media, User } from '@/lib/types';
 import { 
   Globe, 
@@ -53,18 +53,19 @@ export default function WorldPage() {
 
   useEffect(() => {
     async function loadData() {
-      const sessionData = localStorage.getItem('ps_active_session');
-      if (sessionData) {
-        const currentUser = JSON.parse(sessionData) as User;
-        setUser(currentUser);
-        try {
-          const allMedia = await getMediaByUser(currentUser.id);
-          setMedia(allMedia.filter(m => !m.isDeleted));
-        } catch (error) {
-          console.error(error);
-        } finally {
-          setLoading(false);
+      try {
+        const storedUser = getStoredUser();
+        const sessionData = localStorage.getItem('ps_active_session');
+        const currentUser = storedUser || (sessionData ? JSON.parse(sessionData) as User : null);
+        if (currentUser) {
+          setUser(currentUser);
         }
+        const allMedia = currentUser ? await getMediaByUser(currentUser.id) : await getMedia();
+        setMedia(Array.isArray(allMedia) ? allMedia.filter(m => !m.isDeleted) : []);
+      } catch (error) {
+        console.error("Error cargando medios en mapa neural:", error);
+      } finally {
+        setLoading(false);
       }
     }
     loadData();

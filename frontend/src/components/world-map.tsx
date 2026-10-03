@@ -1,4 +1,3 @@
-
 "use client";
 
 import React, { useEffect, useMemo, useState } from 'react';
@@ -7,7 +6,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { Media } from '@/lib/types';
 import { cn } from '@/lib/utils';
-import { Play, Navigation } from 'lucide-react';
+import { Play, Navigation, Layers, Moon, Sun, Satellite } from 'lucide-react';
 import Image from 'next/image';
 
 // PROTOCOLO DE NODOS NEURALES (Marcadores Personalizados)
@@ -41,21 +40,49 @@ const BOUNDS: L.LatLngBoundsExpression = [
   [85, 210]    // Noreste
 ];
 
+type MapStyle = 'dark' | 'satellite' | 'streets';
+
+const TILE_PROVIDERS: Record<MapStyle, { base: string; ref?: string; maxZoom: number; attribution: string }> = {
+  dark: {
+    base: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
+    ref: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}',
+    maxZoom: 16,
+    attribution: 'Esri, HERE, Garmin, © OpenStreetMap contributors'
+  },
+  satellite: {
+    base: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    maxZoom: 19,
+    attribution: 'Esri, Maxar, Earthstar Geographics'
+  },
+  streets: {
+    base: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    maxZoom: 19,
+    attribution: '© OpenStreetMap contributors'
+  }
+};
+
 export default function WorldMap({ media, onMediaClick, center }: WorldMapProps) {
   const [isMounted, setIsMounted] = useState(false);
+  const [mapStyle, setMapStyle] = useState<MapStyle>('dark');
 
   useEffect(() => {
     setIsMounted(true);
   }, []);
 
   const mediaWithCoords = useMemo(() => {
-    return media.filter(m => m.metadata?.gps?.lat !== undefined && m.metadata?.gps?.lng !== undefined);
+    return media.filter(m => {
+      const lat = m.metadata?.gps?.lat ?? m.metadata?.latitude ?? (m as any).latitude;
+      const lng = m.metadata?.gps?.lng ?? m.metadata?.longitude ?? (m as any).longitude;
+      return lat !== undefined && lng !== undefined && !isNaN(Number(lat)) && !isNaN(Number(lng));
+    });
   }, [media]);
 
   const clusters = useMemo(() => {
     const groups: Record<string, Media[]> = {};
     mediaWithCoords.forEach(m => {
-      const key = `${m.metadata!.gps!.lat.toFixed(3)}_${m.metadata!.gps!.lng.toFixed(3)}`;
+      const lat = Number(m.metadata?.gps?.lat ?? m.metadata?.latitude ?? (m as any).latitude);
+      const lng = Number(m.metadata?.gps?.lng ?? m.metadata?.longitude ?? (m as any).longitude);
+      const key = `${lat.toFixed(3)}_${lng.toFixed(3)}`;
       if (!groups[key]) groups[key] = [];
       groups[key].push(m);
     });
@@ -63,6 +90,8 @@ export default function WorldMap({ media, onMediaClick, center }: WorldMapProps)
   }, [mediaWithCoords]);
 
   if (!isMounted) return null;
+
+  const currentProvider = TILE_PROVIDERS[mapStyle];
 
   return (
     <div className="w-full h-full rounded-[3rem] overflow-hidden border border-white/5 shadow-2xl relative bg-[#0a0a0c]">
@@ -78,14 +107,22 @@ export default function WorldMap({ media, onMediaClick, center }: WorldMapProps)
         attributionControl={false}
       >
         <TileLayer
-          url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-          maxZoom={20}
+          key={`${mapStyle}-base`}
+          url={currentProvider.base}
+          maxZoom={currentProvider.maxZoom}
         />
+        {currentProvider.ref && (
+          <TileLayer
+            key={`${mapStyle}-ref`}
+            url={currentProvider.ref}
+            maxZoom={currentProvider.maxZoom}
+          />
+        )}
         
         {clusters.map((cluster, idx) => {
           const first = cluster[0];
-          const lat = first.metadata!.gps!.lat;
-          const lng = first.metadata!.gps!.lng;
+          const lat = Number(first.metadata?.gps?.lat ?? first.metadata?.latitude ?? (first as any).latitude);
+          const lng = Number(first.metadata?.gps?.lng ?? first.metadata?.longitude ?? (first as any).longitude);
           
           return (
             <Marker 
@@ -113,7 +150,7 @@ export default function WorldMap({ media, onMediaClick, center }: WorldMapProps)
                         className="group relative aspect-square rounded-xl overflow-hidden bg-white/5 cursor-pointer ring-1 ring-white/10 hover:ring-primary transition-all duration-300"
                       >
                         <Image 
-                          src={item.thumbnailUrl} 
+                          src={item.thumbnailUrl || item.url} 
                           alt="" 
                           fill 
                           className={cn("object-cover transition-transform duration-500 group-hover:scale-110", item.isAdultContent && "blur-md")}
@@ -136,6 +173,50 @@ export default function WorldMap({ media, onMediaClick, center }: WorldMapProps)
         <MapController center={center} />
       </MapContainer>
       
+      {/* Selector de Capas de Mapa */}
+      <div className="absolute top-8 right-8 z-[400] flex items-center gap-1 bg-black/70 backdrop-blur-xl border border-white/10 p-1.5 rounded-2xl shadow-2xl">
+        <button
+          type="button"
+          onClick={() => setMapStyle('dark')}
+          className={cn(
+            "flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all",
+            mapStyle === 'dark' 
+              ? "bg-primary text-white shadow-md shadow-primary/30" 
+              : "text-white/60 hover:text-white hover:bg-white/5"
+          )}
+        >
+          <Moon className="h-3.5 w-3.5" />
+          <span>Oscuro</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setMapStyle('satellite')}
+          className={cn(
+            "flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all",
+            mapStyle === 'satellite' 
+              ? "bg-primary text-white shadow-md shadow-primary/30" 
+              : "text-white/60 hover:text-white hover:bg-white/5"
+          )}
+        >
+          <Satellite className="h-3.5 w-3.5" />
+          <span>Satélite</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setMapStyle('streets')}
+          className={cn(
+            "flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all",
+            mapStyle === 'streets' 
+              ? "bg-primary text-white shadow-md shadow-primary/30" 
+              : "text-white/60 hover:text-white hover:bg-white/5"
+          )}
+        >
+          <Layers className="h-3.5 w-3.5" />
+          <span>Calles</span>
+        </button>
+      </div>
+
+      {/* Radar de Infraestructura */}
       <div className="absolute top-8 left-8 z-[400] pointer-events-none">
         <div className="bg-black/60 backdrop-blur-2xl border border-white/10 px-6 py-4 rounded-[2rem] flex items-center gap-5 shadow-2xl">
           <div className="relative">

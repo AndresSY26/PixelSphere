@@ -22,6 +22,7 @@ import BridgePage from '@/pages/bridge';
 import LoginPage from '@/pages/login';
 import RegisterPage from '@/pages/register';
 import SharedViewPage from '@/pages/shared-view';
+import TrashPage from '@/pages/trash';
 
 export default function App() {
   return (
@@ -44,6 +45,7 @@ export default function App() {
         <Route path="/achievements" element={<AchievementsPage />} />
         <Route path="/admin" element={<AdminPage />} />
         <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/trash" element={<TrashPage />} />
         <Route path="/bridge" element={<BridgePage />} />
         <Route path="/p/:id" element={<SharedViewPage />} />
         <Route path="*" element={<Navigate to="/gallery" replace />} />

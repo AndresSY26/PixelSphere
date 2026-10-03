@@ -25,7 +25,8 @@ import {
   SwitchCamera,
   ShieldAlert,
   Plus,
-  Navigation
+  Navigation,
+  FileText
 } from 'lucide-react';
 import {
   Tooltip,
@@ -38,6 +39,7 @@ import { useToast } from '@/hooks/use-toast';
 import { User } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import Image from 'next/image';
+import GoogleDrivePicker from '@/components/google-drive-picker';
 
 interface UploadFile {
   id: string;
@@ -65,6 +67,7 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
   const [isUploading, setIsUploading] = useState(false);
   const [overallProgress, setOverallProgress] = useState(0);
   const [globalAdult, setGlobalAdult] = useState(false);
+  const [isDrivePickerOpen, setIsDrivePickerOpen] = useState(false);
   
   // Estados Geoespaciales
   const [currentCoords, setCurrentCoords] = useState<{lat: number, lng: number} | null>(null);
@@ -213,14 +216,21 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
   };
 
   const processFiles = async (files: File[]) => {
-    const validFiles = files.filter(f => f.type.startsWith('image/') || f.type.startsWith('video/'));
     const newEntries: UploadFile[] = [];
-    for (const file of validFiles) {
-      const thumb = file.type.startsWith('video/') ? await captureVideoFrame(file) : undefined;
+    for (const file of files) {
+      const isVideo = file.type.startsWith('video/') || /\.(mp4|mov|webm|mkv|avi|m4v|3gp)$/i.test(file.name);
+      const isImage = file.type.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp|heic|heif|bmp|svg|avif)$/i.test(file.name);
+      
+      let thumb = (file as any).thumbnailB64;
+      if (!thumb && isVideo) {
+        thumb = await captureVideoFrame(file);
+      }
+      
+      const previewUrl = thumb || ((isImage || isVideo) ? URL.createObjectURL(file) : '');
       newEntries.push({
         id: Math.random().toString(36).substring(7),
         file,
-        preview: URL.createObjectURL(file),
+        preview: previewUrl,
         thumbnailB64: thumb,
         isPrivate: false,
         isAdultContent: globalAdult,
@@ -233,21 +243,60 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
 
   const captureVideoFrame = (file: File): Promise<string | undefined> => {
     return new Promise((resolve) => {
-      if (!file.type.startsWith('video/')) return resolve(undefined);
+      const isVideo = file.type.startsWith('video/') || /\.(mp4|mov|webm|mkv|avi|m4v|3gp)$/i.test(file.name);
+      if (!isVideo) return resolve(undefined);
+
       const video = document.createElement('video');
       const canvas = document.createElement('canvas');
       const url = URL.createObjectURL(file);
-      video.src = url; video.muted = true; video.currentTime = 0.5;
-      video.onloadeddata = () => {
-        canvas.width = video.videoWidth; canvas.height = video.videoHeight;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          const dataUri = canvas.toDataURL('image/jpeg', 0.8);
-          URL.revokeObjectURL(url); resolve(dataUri);
-        } else { URL.revokeObjectURL(url); resolve(undefined); }
+      video.src = url;
+      video.muted = true;
+      video.playsInline = true;
+      video.preload = 'metadata';
+
+      let resolved = false;
+      const done = (result?: string) => {
+        if (!resolved) {
+          resolved = true;
+          URL.revokeObjectURL(url);
+          resolve(result);
+        }
       };
-      video.onerror = () => { URL.revokeObjectURL(url); resolve(undefined); };
+
+      const timer = setTimeout(() => done(undefined), 6000);
+
+      video.onloadedmetadata = () => {
+        try {
+          video.currentTime = Math.min(0.5, video.duration > 0 ? video.duration / 3 : 0.1);
+        } catch (e) {
+          done(undefined);
+        }
+      };
+
+      video.onseeked = () => {
+        try {
+          if (video.videoWidth > 0 && video.videoHeight > 0) {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+              const dataUri = canvas.toDataURL('image/jpeg', 0.85);
+              clearTimeout(timer);
+              done(dataUri);
+              return;
+            }
+          }
+          done(undefined);
+        } catch (e) {
+          done(undefined);
+        }
+      };
+
+      video.onerror = () => {
+        clearTimeout(timer);
+        done(undefined);
+      };
     });
   };
 
@@ -280,7 +329,11 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
           formData.append('totalChunks', totalChunks.toString());
           formData.append('isAdult', item.isAdultContent.toString());
           formData.append('filesize', file.size.toString());
-          formData.append('contentType', file.type);
+          const isVideoFile = file.type.startsWith('video/') || /\.(mp4|mov|webm|mkv|avi|m4v|3gp)$/i.test(file.name);
+          const detectedContentType = isVideoFile 
+            ? (file.type && file.type.startsWith('video/') ? file.type : 'video/mp4') 
+            : (file.type || 'application/octet-stream');
+          formData.append('contentType', detectedContentType);
           
           // Inyectar coordenadas GPS si están disponibles
           if (currentCoords) {
@@ -363,9 +416,22 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
               </div>
             </div>
             {uploadQueue.length > 0 && !isUploading && !isCameraMode && (
-              <Button variant="outline" size="sm" className="rounded-xl border-white/10 bg-white/5 text-white" onClick={() => fileInputRef.current?.click()}>
-                <Plus className="h-4 w-4 mr-2 text-primary" /> <span className="hidden sm:inline">Añadir más</span>
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" className="rounded-xl border-white/10 bg-white/5 text-white hover:bg-white/10" onClick={() => setIsDrivePickerOpen(true)}>
+                  <svg className="h-3.5 w-3.5 mr-1.5" viewBox="0 0 87.3 78" xmlns="http://www.w3.org/2000/svg">
+                    <path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/>
+                    <path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44c-.8 1.4-1.2 2.95-1.2 4.5h27.5z" fill="#00ac47"/>
+                    <path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.502l5.852 11.5z" fill="#ea4335"/>
+                    <path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/>
+                    <path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc"/>
+                    <path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 28h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00"/>
+                  </svg>
+                  <span className="hidden sm:inline">Drive</span>
+                </Button>
+                <Button variant="outline" size="sm" className="rounded-xl border-white/10 bg-white/5 text-white" onClick={() => fileInputRef.current?.click()}>
+                  <Plus className="h-4 w-4 mr-2 text-primary" /> <span className="hidden sm:inline">Añadir más</span>
+                </Button>
+              </div>
             )}
           </div>
         </DialogHeader>
@@ -397,11 +463,48 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
             </div>
           ) : uploadQueue.length === 0 ? (
             <div className="space-y-4">
-              <div onClick={() => fileInputRef.current?.click()} className="border-2 border-dashed border-white/5 rounded-[2.5rem] p-12 sm:p-20 flex flex-col items-center justify-center gap-6 transition-all hover:bg-white/[0.02] hover:border-primary/30 group cursor-pointer">
-                <div className="w-20 h-20 rounded-[2rem] bg-white/5 flex items-center justify-center group-hover:scale-110 transition-transform duration-500"><ImageIcon className="h-10 w-10 text-primary" /></div>
-                <div className="text-center"><p className="text-white font-bold text-xl">Ingesta de Archivos</p><p className="text-muted-foreground text-sm mt-2">Selecciona archivos para la red.</p></div>
+              <div onClick={() => fileInputRef.current?.click()} className="border-2 border-dashed border-white/5 rounded-[2.5rem] p-10 sm:p-16 flex flex-col items-center justify-center gap-5 transition-all hover:bg-white/[0.02] hover:border-primary/30 group cursor-pointer">
+                <div className="w-16 h-16 rounded-[1.8rem] bg-white/5 flex items-center justify-center group-hover:scale-110 transition-transform duration-500">
+                  <ImageIcon className="h-8 w-8 text-primary" />
+                </div>
+                <div className="text-center">
+                  <p className="text-white font-bold text-lg">Ingesta de Archivos Locales</p>
+                  <p className="text-muted-foreground text-xs mt-1">Selecciona o arrastra imágenes y videos desde tu dispositivo.</p>
+                </div>
               </div>
-              <Button variant="outline" onClick={() => setIsCameraMode(true)} className="w-full h-16 rounded-3xl border-white/10 bg-white/5 text-white font-bold"><Camera className="mr-3 h-6 w-6 text-primary" /> Iniciar Cámara Neural</Button>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <Button 
+                  variant="outline" 
+                  onClick={() => setIsDrivePickerOpen(true)} 
+                  className="h-16 rounded-3xl border-white/10 bg-white/5 hover:bg-primary/10 hover:border-primary/30 text-white font-bold flex items-center justify-center gap-3 transition-all"
+                >
+                  <svg className="h-6 w-6 shrink-0" viewBox="0 0 87.3 78" xmlns="http://www.w3.org/2000/svg">
+                    <path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/>
+                    <path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44c-.8 1.4-1.2 2.95-1.2 4.5h27.5z" fill="#00ac47"/>
+                    <path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.502l5.852 11.5z" fill="#ea4335"/>
+                    <path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/>
+                    <path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc"/>
+                    <path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 28h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00"/>
+                  </svg>
+                  <div className="text-left leading-tight">
+                    <p className="text-sm font-bold text-white">Google Drive</p>
+                    <p className="text-[10px] text-muted-foreground font-normal">Importar fotos y videos</p>
+                  </div>
+                </Button>
+
+                <Button 
+                  variant="outline" 
+                  onClick={() => setIsCameraMode(true)} 
+                  className="h-16 rounded-3xl border-white/10 bg-white/5 hover:bg-white/10 text-white font-bold flex items-center justify-center gap-3 transition-all"
+                >
+                  <Camera className="h-6 w-6 text-primary shrink-0" />
+                  <div className="text-left leading-tight">
+                    <p className="text-sm font-bold text-white">Cámara Neural</p>
+                    <p className="text-[10px] text-muted-foreground font-normal">Capturar foto o video</p>
+                  </div>
+                </Button>
+              </div>
             </div>
           ) : (
             <div className="space-y-4">
@@ -415,8 +518,14 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
                   {uploadQueue.map((item) => (
                     <div key={item.id} className="flex items-center justify-between p-3 rounded-2xl bg-white/[0.03] border border-white/5">
                       <div className="flex items-center gap-4">
-                        <div className="w-14 h-14 rounded-xl overflow-hidden relative bg-black">
-                          {item.file.type.startsWith('video/') ? <img src={item.thumbnailB64 || item.preview} className="w-full h-full object-cover" /> : <Image src={item.preview} alt="" fill className="object-cover" />}
+                        <div className="w-14 h-14 rounded-xl overflow-hidden relative bg-black flex items-center justify-center">
+                          {item.file.type.startsWith('video/') ? (
+                            <img src={item.thumbnailB64 || item.preview} className="w-full h-full object-cover" />
+                          ) : item.preview ? (
+                            <Image src={item.preview} alt="" fill className="object-cover" />
+                          ) : (
+                            <FileText className="h-6 w-6 text-primary" />
+                          )}
                           {item.status === 'uploading' && <div className="absolute inset-0 bg-black/60 flex items-center justify-center flex-col"><Loader2 className="h-4 w-4 text-primary animate-spin" /><span className="text-[8px] font-bold text-white mt-1">{item.progress}%</span></div>}
                           {item.status === 'completed' && <div className="absolute inset-0 bg-green-500/80 flex items-center justify-center"><CheckCircle2 className="h-6 w-6 text-white" /></div>}
                         </div>
@@ -444,6 +553,14 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
         </DialogFooter>
         <input type="file" ref={fileInputRef} className="hidden" accept="image/*,video/*" multiple onChange={(e) => { if(e.target.files) { processFiles(Array.from(e.target.files)); e.target.value = ''; } }} />
       </DialogContent>
+
+      <GoogleDrivePicker
+        isOpen={isDrivePickerOpen}
+        onClose={() => setIsDrivePickerOpen(false)}
+        onFilesSelected={(driveFiles) => {
+          processFiles(driveFiles);
+        }}
+      />
     </Dialog>
   );
 }

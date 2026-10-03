@@ -50,10 +50,11 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
 import { User, Album } from '@/lib/types';
-import { getAlbumsByUser, addMultipleToAlbum } from '@/lib/storage';
+import { getAlbumsByUser, addMultipleToAlbum, clearStoredUser } from '@/lib/storage';
 import { cn } from '@/lib/utils';
 import UploadDialog from '@/components/upload-dialog';
 import { useNeuralSync } from '@/hooks/use-neural-sync';
+import { logoutGoogle } from '@/lib/google-auth';
 
 interface NavItem {
   name: string;
@@ -69,6 +70,7 @@ interface NavGroup {
 }
 
 const SidebarContent = ({
+  user,
   isMobile,
   isSidebarOpen,
   pathname,
@@ -256,6 +258,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const { toast } = useToast();
 
   const handleLogout = useCallback(() => {
+    logoutGoogle().catch(() => {});
+    clearStoredUser();
     localStorage.removeItem('ps_active_session');
     router.push('/login');
   }, [router]);
@@ -330,6 +334,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     >
       <aside className={cn("bg-[#0a0a0c] border-r border-white/5 transition-all duration-300 hidden md:flex flex-col z-50", isSidebarOpen ? 'w-[280px]' : 'w-20')}>
         <SidebarContent 
+          user={user}
           isSidebarOpen={isSidebarOpen} 
           pathname={pathname} 
           albums={albums} 
@@ -357,6 +362,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               <SheetTrigger asChild><Button variant="ghost" size="icon" className="md:hidden text-muted-foreground"><Menu className="h-6 w-6" /></Button></SheetTrigger>
               <SheetContent side="left" className="p-0 border-none w-[280px] bg-[#0a0a0c]">
                 <SidebarContent 
+                  user={user}
                   isMobile={true} 
                   pathname={pathname} 
                   albums={albums} 
@@ -374,7 +380,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               <Input value={searchVal} onChange={(e) => setSearchVal(e.target.value)} placeholder="Búsqueda global..." className="pl-10 bg-white/5 border-white/10 rounded-full h-9 text-xs" />
             </form>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
             <Button onClick={() => setIsUploadOpen(true)} className="bg-primary text-white rounded-full h-9 px-4 font-bold"><Plus className="mr-2 h-4 w-4" /> Ingesta</Button>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
