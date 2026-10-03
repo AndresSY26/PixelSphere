@@ -138,7 +138,7 @@ export async function uploadMedia(req, res) {
 }
 
 /**
- * INGESTA POR FRAGMENTOS (CHUNKED UPLOAD) RESILIENTE
+ * INGESTA POR FRAGMENTOS (CHUNKED UPLOAD) RESILIENTE Y ATÓMICA
  */
 export async function handleChunkedUpload(req, res) {
   try {
@@ -168,7 +168,10 @@ export async function handleChunkedUpload(req, res) {
     const totalChunks = parseInt(rawTotalChunks ?? '1', 10);
     const isAdultContent = isAdult === 'true' || isAdult === true;
     const totalSize = parseInt(filesize ?? '0', 10) || chunkFile.size;
-    const detectedType = (contentType || chunkFile.mimetype || '').startsWith('video/') ? 'video' : 'image';
+
+    const isVideoExt = /\.(mp4|mov|webm|mkv|avi|m4v|3gp|flv|wmv)$/i.test(filename);
+    const isVideoMime = (contentType || chunkFile.mimetype || '').startsWith('video/');
+    const detectedType = (isVideoMime || isVideoExt) ? 'video' : 'image';
 
     const userUploadPath = path.join(UPLOADS_DIR, userId, detectedType);
     await fs.promises.mkdir(userUploadPath, { recursive: true });
@@ -178,72 +181,114 @@ export async function handleChunkedUpload(req, res) {
     const filePath = path.join(userUploadPath, cleanFilename);
     const publicPath = `/uploads/${userId}/${detectedType}/${cleanFilename}`;
 
-    if (chunkIndex === 0) {
+    // Si viene thumbnailB64 en cualquier fragmento, almacenarlo de inmediato
+    if (thumbnailB64) {
+      try {
+        const thumbDir = path.join(UPLOADS_DIR, userId, 'thumbnails');
+        await fs.promises.mkdir(thumbDir, { recursive: true });
+        const thumbName = `thumb_${fileId}.jpg`;
+        const base64Data = thumbnailB64.includes(',') ? thumbnailB64.split(',')[1] : thumbnailB64;
+        await fs.promises.writeFile(path.join(thumbDir, thumbName), Buffer.from(base64Data, 'base64'));
+      } catch (thumbErr) {
+        console.warn('[ChunkUpload] Error guardando thumbnail:', thumbErr.message);
+      }
+    }
+
+    if (totalChunks <= 1) {
+      // Subida de un único fragmento (fotos o videos cortos)
       await fs.promises.writeFile(filePath, chunkFile.buffer);
     } else {
-      await fs.promises.appendFile(filePath, chunkFile.buffer);
+      // Subida multifragmento: Guardar cada fragmento en su archivo temporal para garantizar orden estricto
+      const tempChunksDir = path.join(userUploadPath, `.chunks_${fileId}`);
+      await fs.promises.mkdir(tempChunksDir, { recursive: true });
+      const chunkFilePath = path.join(tempChunksDir, `part_${chunkIndex}`);
+      await fs.promises.writeFile(chunkFilePath, chunkFile.buffer);
+
+      // Si es el último fragmento, ensamblar en orden numérico estricto
+      if (chunkIndex >= totalChunks - 1) {
+        for (let i = 0; i < totalChunks; i++) {
+          const partFile = path.join(tempChunksDir, `part_${i}`);
+          if (!fs.existsSync(partFile)) {
+            return res.status(400).json({ error: `Fragmento ${i} no encontrado para ensamblaje.` });
+          }
+        }
+
+        const writeStream = fs.createWriteStream(filePath);
+        for (let i = 0; i < totalChunks; i++) {
+          const partFile = path.join(tempChunksDir, `part_${i}`);
+          const partBuffer = await fs.promises.readFile(partFile);
+          if (!writeStream.write(partBuffer)) {
+            await new Promise((resolve) => writeStream.once('drain', resolve));
+          }
+        }
+        await new Promise((resolve) => writeStream.end(resolve));
+
+        // Limpiar el directorio temporal
+        await fs.promises.rm(tempChunksDir, { recursive: true, force: true }).catch(() => {});
+      } else {
+        return res.status(200).json({ status: 'chunk_received', index: chunkIndex });
+      }
     }
 
-    if (chunkIndex >= totalChunks - 1) {
-      let finalThumbnailUrl = detectedType === 'video' ? `${publicPath}#t=0.5` : publicPath;
-      if (thumbnailB64 && detectedType === 'video') {
-        try {
-          const thumbDir = path.join(UPLOADS_DIR, userId, 'thumbnails');
-          await fs.promises.mkdir(thumbDir, { recursive: true });
-          const thumbName = `thumb_${fileId}.jpg`;
-          const base64Data = thumbnailB64.includes(',') ? thumbnailB64.split(',')[1] : thumbnailB64;
-          await fs.promises.writeFile(path.join(thumbDir, thumbName), Buffer.from(base64Data, 'base64'));
-          finalThumbnailUrl = `/uploads/${userId}/thumbnails/${thumbName}`;
-        } catch (thumbErr) {
-          console.warn('[ChunkUpload] Error guardando thumbnail:', thumbErr.message);
-        }
-      }
+    const thumbName = `thumb_${fileId}.jpg`;
+    const thumbDiskPath = path.join(UPLOADS_DIR, userId, 'thumbnails', thumbName);
+    let finalThumbnailUrl = fs.existsSync(thumbDiskPath) 
+      ? `/uploads/${userId}/thumbnails/${thumbName}` 
+      : (detectedType === 'video' ? `${publicPath}#t=0.5` : publicPath);
 
-      const newEntry = {
-        id: fileId,
-        userId,
-        type: detectedType,
-        url: publicPath,
-        path: publicPath,
-        thumbnailUrl: finalThumbnailUrl,
-        filename,
-        title: filename,
-        size: totalSize,
-        width: 1920,
-        height: 1080,
-        mimeType: contentType || chunkFile.mimetype || (detectedType === 'video' ? 'video/mp4' : 'image/jpeg'),
-        tags: [detectedType, 'upload'],
-        isPrivate: false,
-        isAdultContent,
-        latitude: lat ? parseFloat(lat) : undefined,
-        longitude: lng ? parseFloat(lng) : undefined,
-        cameraSource: cameraSource || undefined,
-        createdAt: new Date().toISOString()
-      };
-
-      // Si es imagen, intentar auto-etiquetado con Gemini
-      if (detectedType === 'image') {
-        try {
-          const fileBuffer = await fs.promises.readFile(filePath);
-          const dataUri = `data:${newEntry.mimeType};base64,${fileBuffer.toString('base64')}`;
-          const aiResult = await autoTagImage(dataUri);
-          if (aiResult?.tags?.length) {
-            newEntry.tags = Array.from(new Set([...newEntry.tags, ...aiResult.tags]));
-          }
-          if (aiResult?.description) {
-            newEntry.description = aiResult.description;
-          }
-        } catch (aiErr) {
-          // Ignorar fallo de Gemini opcional
-        }
-      }
-
-      await saveMediaMetadata(newEntry);
-      await unlockAchievement(userId, 'first_upload');
-      return res.status(200).json(newEntry);
+    let cleanMime = contentType || chunkFile.mimetype;
+    if (!cleanMime || cleanMime === 'application/octet-stream') {
+      if (/\.mp4$/i.test(filename)) cleanMime = 'video/mp4';
+      else if (/\.webm$/i.test(filename)) cleanMime = 'video/webm';
+      else if (/\.mov$/i.test(filename)) cleanMime = 'video/quicktime';
+      else if (/\.mkv$/i.test(filename)) cleanMime = 'video/x-matroska';
+      else if (/\.jpg|\.jpeg$/i.test(filename)) cleanMime = 'image/jpeg';
+      else if (/\.png$/i.test(filename)) cleanMime = 'image/png';
+      else cleanMime = detectedType === 'video' ? 'video/mp4' : 'image/jpeg';
     }
 
-    return res.status(200).json({ status: 'chunk_received', index: chunkIndex });
+    const newEntry = {
+      id: fileId,
+      userId,
+      type: detectedType,
+      url: publicPath,
+      path: publicPath,
+      thumbnailUrl: finalThumbnailUrl,
+      filename,
+      title: filename,
+      size: totalSize,
+      width: 1920,
+      height: 1080,
+      mimeType: cleanMime,
+      tags: [detectedType, 'upload'],
+      isPrivate: false,
+      isAdultContent,
+      latitude: lat ? parseFloat(lat) : undefined,
+      longitude: lng ? parseFloat(lng) : undefined,
+      cameraSource: cameraSource || undefined,
+      createdAt: new Date().toISOString()
+    };
+
+    // Auto-etiquetado con Gemini solo para imágenes
+    if (detectedType === 'image') {
+      try {
+        const fileBuffer = await fs.promises.readFile(filePath);
+        const dataUri = `data:${newEntry.mimeType};base64,${fileBuffer.toString('base64')}`;
+        const aiResult = await autoTagImage(dataUri);
+        if (aiResult?.tags?.length) {
+          newEntry.tags = Array.from(new Set([...newEntry.tags, ...aiResult.tags]));
+        }
+        if (aiResult?.description) {
+          newEntry.description = aiResult.description;
+        }
+      } catch (aiErr) {
+        // Ignorar fallo de Gemini opcional
+      }
+    }
+
+    await saveMediaMetadata(newEntry);
+    await unlockAchievement(userId, 'first_upload');
+    return res.status(200).json(newEntry);
   } catch (error) {
     console.error('[MediaController] Error en subida por fragmentos:', error);
     return res.status(500).json({ error: 'Falla al procesar el fragmento.', details: error.message });
@@ -271,10 +316,29 @@ export async function streamVideo(req, res) {
     const fileSize = stat.size;
     const range = req.headers.range;
 
+    let mime = media.mimeType || 'video/mp4';
+    if (!mime || mime === 'application/octet-stream') {
+      if (videoPath.endsWith('.webm')) mime = 'video/webm';
+      else if (videoPath.endsWith('.mov')) mime = 'video/quicktime';
+      else if (videoPath.endsWith('.mkv')) mime = 'video/x-matroska';
+      else mime = 'video/mp4';
+    }
+
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+
     if (range) {
       const parts = range.replace(/bytes=/, '').split('-');
       const start = parseInt(parts[0], 10);
       const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+
+      if (start >= fileSize || end >= fileSize) {
+        res.writeHead(416, {
+          'Content-Range': `bytes */${fileSize}`,
+        });
+        return res.end();
+      }
+
       const chunkSize = (end - start) + 1;
       const fileStream = fs.createReadStream(videoPath, { start, end });
 
@@ -282,7 +346,7 @@ export async function streamVideo(req, res) {
         'Content-Range': `bytes ${start}-${end}/${fileSize}`,
         'Accept-Ranges': 'bytes',
         'Content-Length': chunkSize,
-        'Content-Type': media.mimeType || 'video/mp4',
+        'Content-Type': mime,
       };
 
       res.writeHead(206, head);
@@ -290,7 +354,8 @@ export async function streamVideo(req, res) {
     } else {
       const head = {
         'Content-Length': fileSize,
-        'Content-Type': media.mimeType || 'video/mp4',
+        'Content-Type': mime,
+        'Accept-Ranges': 'bytes',
       };
       res.writeHead(200, head);
       fs.createReadStream(videoPath).pipe(res);

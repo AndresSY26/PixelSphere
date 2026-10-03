@@ -30,8 +30,13 @@ export default function NeuralVideoPlayer({ src, mediaId, userId, initialPositio
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   
+  const [currentSrc, setCurrentSrc] = useState<string>(() => {
+    return mediaId && !src.startsWith('/api/') ? `/api/media/${mediaId}/stream` : src;
+  });
+
   const [isPlaying, setIsPlaying] = useState(false);
   const [isBuffering, setIsBuffering] = useState(false);
+  const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -42,6 +47,25 @@ export default function NeuralVideoPlayer({ src, mediaId, userId, initialPositio
   const [showControls, setShowControls] = useState(true);
   const [isHovering, setIsHovering] = useState(false);
   const [hasResumed, setHasResumed] = useState(false);
+
+  useEffect(() => {
+    if (mediaId && !src.startsWith('/api/')) {
+      setCurrentSrc(`/api/media/${mediaId}/stream`);
+    } else {
+      setCurrentSrc(src);
+    }
+    setPlaybackError(null);
+  }, [src, mediaId]);
+
+  const handleVideoError = () => {
+    if (currentSrc !== src) {
+      console.warn("[NeuralPlayer] Fallback de endpoint de streaming a ruta estática:", src);
+      setCurrentSrc(src);
+    } else {
+      console.error("[NeuralPlayer] Error al cargar video:", currentSrc);
+      setPlaybackError("El formato del video requiere transcodificación o no es compatible con este navegador.");
+    }
+  };
 
   useEffect(() => {
     if (videoRef.current && initialPosition > 0 && !hasResumed) {
@@ -185,7 +209,7 @@ export default function NeuralVideoPlayer({ src, mediaId, userId, initialPositio
     >
       <video
         ref={videoRef}
-        src={src}
+        src={currentSrc}
         preload="auto"
         className={cn(
           "w-full h-full max-h-[85vh] object-contain cursor-pointer transition-all duration-500",
@@ -194,11 +218,12 @@ export default function NeuralVideoPlayer({ src, mediaId, userId, initialPositio
         onTimeUpdate={handleTimeUpdate}
         onLoadedMetadata={handleLoadedMetadata}
         onWaiting={() => setIsBuffering(true)}
-        onPlaying={() => setIsBuffering(false)}
-        onCanPlay={() => setIsBuffering(false)}
+        onPlaying={() => { setIsBuffering(false); setPlaybackError(null); }}
+        onCanPlay={() => { setIsBuffering(false); setPlaybackError(null); }}
         onSeeked={() => setIsBuffering(false)}
         onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
+        onError={handleVideoError}
         onEnded={() => {
           setIsPlaying(false);
           setShowControls(true);
@@ -207,6 +232,25 @@ export default function NeuralVideoPlayer({ src, mediaId, userId, initialPositio
         onClick={togglePlay}
         playsInline
       />
+
+      {playbackError && (
+        <div className="absolute inset-0 flex items-center justify-center z-50 bg-black/80 p-6 text-center">
+          <div className="max-w-md space-y-4">
+            <div className="w-12 h-12 rounded-2xl bg-red-500/20 text-red-400 flex items-center justify-center mx-auto border border-red-500/30">
+              <RotateCcw className="h-6 w-6" />
+            </div>
+            <p className="text-sm font-bold text-white">{playbackError}</p>
+            <div className="flex gap-3 justify-center">
+              <Button size="sm" variant="outline" className="rounded-xl border-white/20 text-white" onClick={() => { setCurrentSrc(`${src}?t=${Date.now()}`); setPlaybackError(null); }}>
+                Reintentar
+              </Button>
+              <Button size="sm" className="rounded-xl bg-primary text-white font-bold" asChild>
+                <a href={src} download>Descargar Video</a>
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {isBuffering && (
         <div className="absolute inset-0 flex items-center justify-center z-40 bg-black/20 pointer-events-none">

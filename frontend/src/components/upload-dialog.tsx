@@ -318,10 +318,14 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
         for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
           const start = chunkIndex * CHUNK_SIZE;
           const end = Math.min(start + CHUNK_SIZE, file.size);
-          const chunk = file.slice(start, end);
+          const isVideoFile = file.type.startsWith('video/') || /\.(mp4|mov|webm|mkv|avi|m4v|3gp)$/i.test(file.name);
+          const detectedContentType = isVideoFile 
+            ? (file.type && file.type.startsWith('video/') ? file.type : 'video/mp4') 
+            : (file.type || 'application/octet-stream');
+          const chunk = file.slice(start, end, detectedContentType);
 
           const formData = new FormData();
-          formData.append('chunk', chunk);
+          // Metadatos primero para que el parser de streaming los reciba antes del binario
           formData.append('userId', user.id);
           formData.append('filename', file.name);
           formData.append('fileId', fileId);
@@ -329,25 +333,25 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
           formData.append('totalChunks', totalChunks.toString());
           formData.append('isAdult', item.isAdultContent.toString());
           formData.append('filesize', file.size.toString());
-          const isVideoFile = file.type.startsWith('video/') || /\.(mp4|mov|webm|mkv|avi|m4v|3gp)$/i.test(file.name);
-          const detectedContentType = isVideoFile 
-            ? (file.type && file.type.startsWith('video/') ? file.type : 'video/mp4') 
-            : (file.type || 'application/octet-stream');
           formData.append('contentType', detectedContentType);
           
-          // Inyectar coordenadas GPS si están disponibles
           if (currentCoords) {
             formData.append('lat', currentCoords.lat.toString());
             formData.append('lng', currentCoords.lng.toString());
           }
-          
           if (item.cameraSource) formData.append('cameraSource', item.cameraSource);
-          if (chunkIndex === totalChunks - 1 && item.thumbnailB64) {
+          if (item.thumbnailB64) {
             formData.append('thumbnailB64', item.thumbnailB64);
           }
+          
+          // El archivo binario se añade al final
+          formData.append('chunk', chunk, `${file.name}.part${chunkIndex}`);
 
           const response = await fetch('/api/upload', { method: 'POST', body: formData });
-          if (!response.ok) throw new Error("Falla en fragmento.");
+          if (!response.ok) {
+            const errData = await response.json().catch(() => ({}));
+            throw new Error(errData.error || `Falla en fragmento ${chunkIndex + 1}/${totalChunks}`);
+          }
 
           const progress = Math.round(((chunkIndex + 1) / totalChunks) * 100);
           setUploadQueue(prev => prev.map(f => f.id === item.id ? { ...f, progress } : f));
