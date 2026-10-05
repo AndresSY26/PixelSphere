@@ -5,7 +5,8 @@ import {
   createAlbum, 
   updateAlbum, 
   deleteAlbum, 
-  addMediaToAlbum 
+  addMediaToAlbum,
+  removeMediaFromAlbum
 } from '../controllers/albumController.js';
 
 const router = Router();
@@ -16,5 +17,6 @@ router.get('/:id', getAlbumById);
 router.put('/:id', updateAlbum);
 router.delete('/:id', deleteAlbum);
 router.post('/:id/media', addMediaToAlbum);
+router.delete('/:id/media', removeMediaFromAlbum);
 
 export default router;

@@ -70,6 +70,7 @@ export const api = {
     update: (id, userId, updates) => request(`/albums/${id}`, { method: 'PUT', body: JSON.stringify({ userId, updates }) }),
     delete: (id, userId) => request(`/albums/${id}`, { method: 'DELETE', body: JSON.stringify({ userId }) }),
     addMedia: (id, userId, mediaIds) => request(`/albums/${id}/media`, { method: 'POST', body: JSON.stringify({ userId, mediaIds }) }),
+    removeMedia: (id, userId, mediaIds) => request(`/albums/${id}/media`, { method: 'DELETE', body: JSON.stringify({ userId, mediaIds }) }),
   },
   ai: {
     autoTag: (data) => request('/ai/auto-tag', { method: 'POST', body: JSON.stringify(data) }),

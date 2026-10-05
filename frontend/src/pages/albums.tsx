@@ -276,14 +276,33 @@ export default function AlbumsPage() {
   const handleBatchAddToAlbum = async () => {
     if (!user || !currentAlbumId || selectedGalleryIds.size === 0) return;
     setIsAddingMedia(true);
+    const idsToAdd = Array.from(selectedGalleryIds);
     try {
-      await addMultipleToAlbum(currentAlbumId, user.id, Array.from(selectedGalleryIds));
+      await addMultipleToAlbum(currentAlbumId, user.id, idsToAdd);
+      
+      // Actualización optimista de estado local
+      setAllAlbums(prev => prev.map(a => {
+        if (a.id === currentAlbumId) {
+          const currentIds = a.mediaIds || [];
+          return { ...a, mediaIds: Array.from(new Set([...currentIds, ...idsToAdd])) };
+        }
+        return a;
+      }));
+      setMedia(prev => prev.map(m => {
+        if (idsToAdd.includes(m.id)) {
+          const curAlbumIds = m.albumIds || (m.albumId ? [m.albumId] : []);
+          return { ...m, albumId: currentAlbumId, albumIds: Array.from(new Set([...curAlbumIds, currentAlbumId])) };
+        }
+        return m;
+      }));
+
       toast({ 
         title: "Activos Orquestados", 
-        description: `${selectedGalleryIds.size} elementos añadidos a la colección.` 
+        description: `${idsToAdd.length} elementos añadidos a la colección.` 
       });
       setIsMediaSelectorOpen(false);
       setSelectedGalleryIds(new Set());
+      await fetchData(true);
     } catch (error) {
       console.error("Error al vincular elementos al álbum:", error);
       toast({ title: "Error de Vinculación", variant: "destructive" });
@@ -297,7 +316,24 @@ export default function AlbumsPage() {
     try { 
       await addMultipleToAlbum(albumId, user.id, [selectedMedia.id]); 
       const album = allAlbums.find(a => a.id === albumId);
+
+      setAllAlbums(prev => prev.map(a => {
+        if (a.id === albumId) {
+          const currentIds = a.mediaIds || [];
+          return { ...a, mediaIds: Array.from(new Set([...currentIds, selectedMedia.id])) };
+        }
+        return a;
+      }));
+      setMedia(prev => prev.map(m => {
+        if (m.id === selectedMedia.id) {
+          const curAlbumIds = m.albumIds || (m.albumId ? [m.albumId] : []);
+          return { ...m, albumId, albumIds: Array.from(new Set([...curAlbumIds, albumId])) };
+        }
+        return m;
+      }));
+
       toast({ title: "Vínculo Creado", description: `Añadido a ${album?.title}` }); 
+      await fetchData(true);
     } catch (e) {
       console.error("Error al añadir al álbum:", e);
       toast({ title: "Error", variant: "destructive" });
@@ -309,7 +345,23 @@ export default function AlbumsPage() {
     try { 
       await removeMultipleFromAlbum(albumId, user.id, [selectedMedia.id]); 
       const album = allAlbums.find(a => a.id === albumId);
+
+      setAllAlbums(prev => prev.map(a => {
+        if (a.id === albumId) {
+          return { ...a, mediaIds: (a.mediaIds || []).filter(id => id !== selectedMedia.id) };
+        }
+        return a;
+      }));
+      setMedia(prev => prev.map(m => {
+        if (m.id === selectedMedia.id) {
+          const curAlbumIds = (m.albumIds || (m.albumId ? [m.albumId] : [])).filter(id => id !== albumId);
+          return { ...m, albumId: m.albumId === albumId ? (curAlbumIds[0] || undefined) : m.albumId, albumIds: curAlbumIds };
+        }
+        return m;
+      }));
+
       toast({ title: "Vínculo Removido", description: `Retirado de ${album?.title}` }); 
+      await fetchData(true);
     } catch (e) {
       console.error("Error al remover del álbum:", e);
       toast({ title: "Error", variant: "destructive" });
@@ -441,7 +493,13 @@ export default function AlbumsPage() {
 
   const albumMedia = useMemo(() => {
     if (!currentAlbum) return [];
-    return media.filter(m => currentAlbum.mediaIds.includes(m.id) && !m.isPrivate && !m.isDeleted);
+    return media.filter(m => 
+      !m.isPrivate && !m.isDeleted && (
+        (Array.isArray(currentAlbum.mediaIds) && currentAlbum.mediaIds.includes(m.id)) || 
+        m.albumId === currentAlbum.id || 
+        (Array.isArray(m.albumIds) && m.albumIds.includes(currentAlbum.id))
+      )
+    );
   }, [currentAlbum, media]);
 
   const breadcrumbs = useMemo(() => {
@@ -462,9 +520,16 @@ export default function AlbumsPage() {
     const crawl = (startId: string) => {
       const album = allAlbums.find(a => a.id === startId);
       if (!album) return;
-      (album.mediaIds || []).forEach(mId => {
-        const found = media.find(m => m.id === mId && !m.isPrivate && !m.isDeleted);
-        if (found) uniqueMedia.set(found.id, found);
+      media.forEach(m => {
+        if (!m.isPrivate && !m.isDeleted) {
+          if (
+            (Array.isArray(album.mediaIds) && album.mediaIds.includes(m.id)) ||
+            m.albumId === startId ||
+            (Array.isArray(m.albumIds) && m.albumIds.includes(startId))
+          ) {
+            uniqueMedia.set(m.id, m);
+          }
+        }
       });
       allAlbums.filter(a => a.parentId === startId).forEach(child => crawl(child.id));
     };
@@ -520,7 +585,11 @@ export default function AlbumsPage() {
   const AlbumBrowser = ({ onSelect, onRemove }: { onSelect: (id: string) => void, onRemove: (id: string) => void }) => {
     const currentList = useMemo(() => allAlbums.filter(a => (a.parentId || null) === (linkNavParentId || null)), [linkNavParentId, allAlbums]);
     const parentAlbum = useMemo(() => allAlbums.find(a => a.id === linkNavParentId), [linkNavParentId, allAlbums]);
-    const isAlreadyLinked = selectedMedia ? parentAlbum?.mediaIds.includes(selectedMedia.id) : false;
+    const isAlreadyLinked = selectedMedia && parentAlbum ? (
+      (Array.isArray(parentAlbum.mediaIds) && parentAlbum.mediaIds.includes(selectedMedia.id)) ||
+      selectedMedia.albumId === parentAlbum.id ||
+      (Array.isArray(selectedMedia.albumIds) && selectedMedia.albumIds.includes(parentAlbum.id))
+    ) : false;
 
     return (
       <div className="space-y-4">
@@ -567,7 +636,19 @@ export default function AlbumsPage() {
         <ScrollArea className="h-64 pr-2">
           <div className="space-y-1">
             {currentList.map(album => {
-              const hasMedia = selectedMedia && album.mediaIds.includes(selectedMedia.id);
+              const hasMedia = selectedMedia && (
+                (Array.isArray(album.mediaIds) && album.mediaIds.includes(selectedMedia.id)) ||
+                selectedMedia.albumId === album.id ||
+                (Array.isArray(selectedMedia.albumIds) && selectedMedia.albumIds.includes(album.id))
+              );
+              const linkedCount = media.filter(m => 
+                !m.isPrivate && !m.isDeleted && (
+                  (Array.isArray(album.mediaIds) && album.mediaIds.includes(m.id)) ||
+                  m.albumId === album.id ||
+                  (Array.isArray(m.albumIds) && m.albumIds.includes(album.id))
+                )
+              ).length;
+
               return (
                 <Button 
                   key={album.id}
@@ -582,7 +663,7 @@ export default function AlbumsPage() {
                     <FolderOpen className={cn("h-5 w-5 mr-3 shrink-0 group-hover:scale-110 transition-transform", hasMedia ? "text-primary" : "text-accent/60")} />
                     <div className="text-left min-w-0">
                       <p className={cn("text-sm font-bold truncate", hasMedia ? "text-primary" : "text-white")}>{album.title}</p>
-                      <p className="text-[9px] uppercase font-black text-muted-foreground/40">{album.mediaIds.length} activos vinculados</p>
+                      <p className="text-[9px] uppercase font-black text-muted-foreground/40">{linkedCount} activos vinculados</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
@@ -841,7 +922,11 @@ export default function AlbumsPage() {
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-6">
                 {filteredSelectorMedia.map((item) => {
                   const isSelected = selectedGalleryIds.has(item.id);
-                  const alreadyInAlbum = currentAlbum?.mediaIds.includes(item.id);
+                  const alreadyInAlbum = currentAlbum && (
+                    (Array.isArray(currentAlbum.mediaIds) && currentAlbum.mediaIds.includes(item.id)) ||
+                    item.albumId === currentAlbum.id ||
+                    (Array.isArray(item.albumIds) && item.albumIds.includes(currentAlbum.id))
+                  );
 
                   return (
                     <div 
@@ -918,8 +1003,8 @@ export default function AlbumsPage() {
                     <div className="p-5 rounded-3xl bg-white/[0.03] border border-white/5 space-y-4">
                       <p className="text-[10px] font-black uppercase tracking-[0.3em] text-primary flex items-center gap-2"><FolderTree className="h-3 w-3" /> Estado de Orquestación</p>
                       <div className="space-y-2">
-                        {allAlbums.filter(a => a.mediaIds.includes(selectedMedia.id)).length > 0 ? (
-                          allAlbums.filter(a => a.mediaIds.includes(selectedMedia.id)).map(a => (
+                        {allAlbums.filter(a => (Array.isArray(a.mediaIds) && a.mediaIds.includes(selectedMedia.id)) || selectedMedia.albumId === a.id || (Array.isArray(selectedMedia.albumIds) && selectedMedia.albumIds.includes(a.id))).length > 0 ? (
+                          allAlbums.filter(a => (Array.isArray(a.mediaIds) && a.mediaIds.includes(selectedMedia.id)) || selectedMedia.albumId === a.id || (Array.isArray(selectedMedia.albumIds) && selectedMedia.albumIds.includes(a.id))).map(a => (
                             <div key={a.id} className="text-[10px] text-primary uppercase font-bold tracking-widest flex items-center gap-2 bg-primary/5 p-2 rounded-lg border border-primary/10">
                               <CheckCircle2 className="h-3 w-3" /> {getFullAlbumPath(a.id)}
                             </div>

@@ -177,7 +177,8 @@ export async function addMultipleToAlbum(aid, uid, mids) {
 }
 
 export async function removeMultipleFromAlbum(aid, uid, mids) {
-  return true;
+  const res = await api.albums.removeMedia(aid, uid, mids);
+  return res?.success || true;
 }
 
 // ==================== LOGROS ====================

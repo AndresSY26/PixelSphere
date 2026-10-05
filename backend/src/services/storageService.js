@@ -100,6 +100,29 @@ export async function ensureDirectories() {
     CACHE.users = result.users;
     await syncToDisk('users');
 
+    // Sincronización bidireccional automática entre albums.json y media.json
+    let albumsChanged = false;
+    CACHE.albums.forEach(album => {
+      if (!Array.isArray(album.mediaIds)) {
+        album.mediaIds = [];
+        albumsChanged = true;
+      }
+      const matchingMediaIds = CACHE.media
+        .filter(m => !m.isDeleted && (m.albumId === album.id || (m.albumIds && m.albumIds.includes(album.id))))
+        .map(m => m.id);
+
+      const merged = Array.from(new Set([...album.mediaIds, ...matchingMediaIds]));
+      if (merged.length !== album.mediaIds.length) {
+        album.mediaIds = merged;
+        albumsChanged = true;
+      }
+    });
+
+    if (albumsChanged) {
+      await fs.writeFile(FILE_PATHS.ALBUMS, JSON.stringify(CACHE.albums, null, 2), 'utf-8');
+      console.log('[StorageService] Consistencia de album.mediaIds sincronizada con media.json');
+    }
+
     CACHE.isInitialized = true;
   })();
 
@@ -230,6 +253,31 @@ export async function saveMediaMetadata(entry) {
   }
   CACHE.media = all;
   await fs.writeFile(FILE_PATHS.MEDIA, JSON.stringify(all, null, 2), 'utf-8');
+
+  // Si el medio tiene asignado albumId o albumIds, sincronizar de inmediato en albums.json
+  const targetAlbumIds = Array.from(new Set([
+    ...(entry.albumId ? [entry.albumId] : []),
+    ...(Array.isArray(entry.albumIds) ? entry.albumIds : [])
+  ]));
+  if (targetAlbumIds.length > 0) {
+    const albums = await getAlbums();
+    let albumsUpdated = false;
+    albums.forEach(alb => {
+      if (targetAlbumIds.includes(alb.id)) {
+        if (!Array.isArray(alb.mediaIds)) alb.mediaIds = [];
+        if (!alb.mediaIds.includes(entry.id)) {
+          alb.mediaIds.push(entry.id);
+          albumsUpdated = true;
+        }
+      }
+    });
+    if (albumsUpdated) {
+      CACHE.albums = albums;
+      await fs.writeFile(FILE_PATHS.ALBUMS, JSON.stringify(albums, null, 2), 'utf-8');
+      broadcastNeuralEvent('ALBUMS', { userId: entry.userId });
+    }
+  }
+
   broadcastNeuralEvent('MEDIA', { userId: entry.userId, mediaId: entry.id });
   return entry;
 }
