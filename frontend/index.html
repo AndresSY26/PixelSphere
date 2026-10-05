@@ -20,10 +20,13 @@
     <script>
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', function() {
-          navigator.serviceWorker.register('/sw.js').then(
-            function(reg) { console.log('Service Worker registrado:', reg.scope); },
-            function(err) { console.error('Fallo en registro de SW:', err); }
-          );
+          navigator.serviceWorker.register('/sw.js', { scope: '/' })
+            .then(function(reg) {
+              console.log('PixelSphere Service Worker activo:', reg.scope);
+            })
+            .catch(function(err) {
+              console.warn('Registro de Service Worker no disponible en este entorno:', err?.message || err);
+            });
         });
       }
     </script>

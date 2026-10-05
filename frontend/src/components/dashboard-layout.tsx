@@ -50,9 +50,10 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
 import { User, Album } from '@/lib/types';
-import { getAlbumsByUser, addMultipleToAlbum, clearStoredUser } from '@/lib/storage';
+import { getAlbums, getAlbumsByUser, addMultipleToAlbum, clearStoredUser } from '@/lib/storage';
 import { cn } from '@/lib/utils';
 import UploadDialog from '@/components/upload-dialog';
+import { DatabaseInspectorDialog } from '@/components/database-inspector-dialog';
 import { useNeuralSync } from '@/hooks/use-neural-sync';
 import { logoutGoogle } from '@/lib/google-auth';
 
@@ -271,7 +272,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       try {
         const u = JSON.parse(sessionData);
         setUser(u);
-        getAlbumsByUser(u.id).then(setAlbums);
+        getAlbums().then(setAlbums);
       } catch (e) {
         router.push('/login');
       }
@@ -280,12 +281,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     }
 
     const onNeural = () => {
-      const data = localStorage.getItem('ps_active_session');
-      if (data) {
-        try {
-          getAlbumsByUser(JSON.parse(data).id).then(setAlbums);
-        } catch (e) {}
-      }
+      getAlbums().then(setAlbums).catch(() => {});
     };
     window.addEventListener('neural-update', onNeural);
     return () => window.removeEventListener('neural-update', onNeural);
@@ -381,6 +377,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             </form>
           </div>
           <div className="flex items-center gap-3">
+            <DatabaseInspectorDialog />
             <Button onClick={() => setIsUploadOpen(true)} className="bg-primary text-white rounded-full h-9 px-4 font-bold"><Plus className="mr-2 h-4 w-4" /> Ingesta</Button>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>

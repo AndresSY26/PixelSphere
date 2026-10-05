@@ -35,6 +35,7 @@ import {
   CheckSquare,
   Square,
   Home,
+  Users,
   CornerDownRight,
   Sparkles
 } from 'lucide-react';
@@ -50,7 +51,10 @@ import { cn, formatBytes } from '@/lib/utils';
 interface GoogleDrivePickerProps {
   isOpen: boolean;
   onClose: () => void;
-  onFilesSelected: (files: File[]) => void;
+  onFilesSelected?: (files: File[]) => void;
+  onDriveFilesSelected?: (files: GoogleDriveFile[]) => void;
+  userId?: string;
+  onImportSuccess?: () => void;
 }
 
 interface BreadcrumbItem {
@@ -58,15 +62,25 @@ interface BreadcrumbItem {
   name: string;
 }
 
-export default function GoogleDrivePicker({ isOpen, onClose, onFilesSelected }: GoogleDrivePickerProps) {
+export default function GoogleDrivePicker({ 
+  isOpen, 
+  onClose, 
+  onFilesSelected,
+  onDriveFilesSelected,
+  userId,
+  onImportSuccess
+}: GoogleDrivePickerProps) {
   const [files, setFiles] = useState<GoogleDriveFile[]>([]);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  // Mapa de elementos seleccionados persistente entre navegación de diferentes carpetas
+  const [selectedItemsMap, setSelectedItemsMap] = useState<Map<string, GoogleDriveFile>>(new Map());
+  const selectedIds = new Set(selectedItemsMap.keys());
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [importProgress, setImportProgress] = useState<{ current: number; total: number; name: string } | null>(null);
   
   // Por defecto: Navegación jerárquica de carpetas (Drive estructurado)
+  const [driveSection, setDriveSection] = useState<'my-drive' | 'shared-with-me'>('my-drive');
   const [viewMode, setViewMode] = useState<'folders' | 'flat'>('folders');
   const [breadcrumbs, setBreadcrumbs] = useState<BreadcrumbItem[]>([{ id: 'root', name: 'Mi Unidad' }]);
   const [filterType, setFilterType] = useState<'all' | 'media' | 'images' | 'videos' | 'docs'>('all');
@@ -78,6 +92,20 @@ export default function GoogleDrivePicker({ isOpen, onClose, onFilesSelected }: 
 
   const currentFolder = breadcrumbs[breadcrumbs.length - 1] || { id: 'root', name: 'Mi Unidad' };
   const currentFolderId = viewMode === 'folders' ? currentFolder.id : null;
+
+  const handleSwitchSection = (section: 'my-drive' | 'shared-with-me') => {
+    setDriveSection(section);
+    setSearchQuery('');
+    if (section === 'my-drive') {
+      const rootCrumb = [{ id: 'root', name: 'Mi Unidad' }];
+      setBreadcrumbs(rootCrumb);
+      fetchFiles(undefined, false, '', 'root', filterType);
+    } else {
+      const sharedCrumb = [{ id: 'shared-with-me', name: 'Compartido conmigo' }];
+      setBreadcrumbs(sharedCrumb);
+      fetchFiles(undefined, false, '', 'shared-with-me', filterType);
+    }
+  };
 
   const fetchFiles = async (
     token?: string, 
@@ -105,9 +133,11 @@ export default function GoogleDrivePicker({ isOpen, onClose, onFilesSelected }: 
       const activeFolder = customFolderId !== undefined ? customFolderId : currentFolderId;
       const activeFilter = customFilter || filterType;
       const activeQuery = customQuery !== undefined ? customQuery : searchQuery;
+      const isSharedSection = activeFolder === 'shared-with-me';
 
       const result = await listDriveFiles(currentToken, {
         folderId: activeFolder,
+        sharedWithMe: isSharedSection,
         query: activeQuery,
         filterType: activeFilter,
         pageToken: isLoadMore ? nextPageToken : null,
@@ -151,36 +181,43 @@ export default function GoogleDrivePicker({ isOpen, onClose, onFilesSelected }: 
       setViewMode('folders');
       setSearchQuery('');
       setBreadcrumbs(prev => [...prev, { id: folder.id, name: folder.name }]);
+      fetchFiles(undefined, false, '', folder.id, filterType);
     }
   };
 
   // Navegar a una posición en el rastro de migas (Breadcrumbs)
   const handleNavigateBreadcrumb = (index: number) => {
     setSearchQuery('');
-    setBreadcrumbs(prev => prev.slice(0, index + 1));
+    const targetCrumbs = breadcrumbs.slice(0, index + 1);
+    const targetCrumb = targetCrumbs[targetCrumbs.length - 1];
+    setBreadcrumbs(targetCrumbs);
+    fetchFiles(undefined, false, '', targetCrumb.id, filterType);
   };
 
   // Subir un nivel
   const handleGoUpOneLevel = () => {
     if (breadcrumbs.length > 1) {
       setSearchQuery('');
-      setBreadcrumbs(prev => prev.slice(0, prev.length - 1));
+      const targetCrumbs = breadcrumbs.slice(0, breadcrumbs.length - 1);
+      const targetCrumb = targetCrumbs[targetCrumbs.length - 1];
+      setBreadcrumbs(targetCrumbs);
+      fetchFiles(undefined, false, '', targetCrumb.id, filterType);
     }
   };
 
-  // Selección de archivos
+  // Selección de archivos con persistencia entre múltiples carpetas
   const toggleSelectFile = (file: GoogleDriveFile) => {
     if (file.mimeType === 'application/vnd.google-apps.folder') {
       handleOpenFolder(file);
       return;
     }
 
-    setSelectedIds(prev => {
-      const next = new Set(prev);
+    setSelectedItemsMap(prev => {
+      const next = new Map(prev);
       if (next.has(file.id)) {
         next.delete(file.id);
       } else {
-        next.add(file.id);
+        next.set(file.id, file);
       }
       return next;
     });
@@ -191,15 +228,14 @@ export default function GoogleDrivePicker({ isOpen, onClose, onFilesSelected }: 
   const regularFiles = files.filter(f => f.mimeType !== 'application/vnd.google-apps.folder');
 
   const toggleSelectAllInFolder = () => {
-    const fileIdsInView = regularFiles.map(f => f.id);
-    const allSelected = fileIdsInView.every(id => selectedIds.has(id));
+    const allSelectedInView = regularFiles.length > 0 && regularFiles.every(f => selectedItemsMap.has(f.id));
 
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      if (allSelected) {
-        fileIdsInView.forEach(id => next.delete(id));
+    setSelectedItemsMap(prev => {
+      const next = new Map(prev);
+      if (allSelectedInView) {
+        regularFiles.forEach(f => next.delete(f.id));
       } else {
-        fileIdsInView.forEach(id => next.add(id));
+        regularFiles.forEach(f => next.set(f.id, f));
       }
       return next;
     });
@@ -229,6 +265,20 @@ export default function GoogleDrivePicker({ isOpen, onClose, onFilesSelected }: 
     }
   };
 
+  // Confirmar selección para enviarla al Laboratorio de Ingesta o procesar importación directa
+  const handleConfirmSelection = async () => {
+    const allSelected = Array.from(selectedItemsMap.values());
+    if (allSelected.length === 0) return;
+
+    if (onDriveFilesSelected) {
+      onDriveFilesSelected(allSelected);
+      onClose();
+      return;
+    }
+
+    await handleImportSelected();
+  };
+
   const handleImportSelected = async () => {
     const token = await getAccessToken();
     if (!token) {
@@ -236,19 +286,101 @@ export default function GoogleDrivePicker({ isOpen, onClose, onFilesSelected }: 
       return;
     }
 
-    // Buscar los archivos seleccionados de la lista actual o previa
-    const itemsToDownload = files.filter(f => selectedIds.has(f.id));
-    if (itemsToDownload.length === 0) return;
+    const itemsToProcess = Array.from(selectedItemsMap.values());
+    if (itemsToProcess.length === 0) return;
 
     setIsImporting(true);
-    const downloadedFiles: File[] = [];
 
+    // Obtener ID de usuario activo
+    let activeUserId = userId;
+    if (!activeUserId && typeof window !== 'undefined') {
+      try {
+        const stored = localStorage.getItem('ps_active_session');
+        if (stored) {
+          activeUserId = JSON.parse(stored).id;
+        }
+      } catch (e) {}
+    }
+
+    // 1. INGESTA DIRECTA SERVIDOR-A-SERVIDOR (Máxima velocidad, streaming a disco, sin límite de peso o cantidad)
+    if (activeUserId) {
+      try {
+        setImportProgress({
+          current: 1,
+          total: itemsToProcess.length,
+          name: `Iniciando transferencia masiva (${itemsToProcess.length} activos)...`
+        });
+
+        const res = await fetch('/api/cloud/import-drive-batch', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            userId: activeUserId,
+            token: token,
+            items: itemsToProcess.map(it => ({
+              id: it.id,
+              name: it.name,
+              mimeType: it.mimeType,
+              size: it.size
+            }))
+          })
+        });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || `Error del servidor (${res.status})`);
+        }
+
+        const data = await res.json();
+
+        if (data.importedCount > 0) {
+          toast({
+            title: '¡Importación Completada!',
+            description: `Se importaron ${data.importedCount} de ${itemsToProcess.length} multimedia exitosamente en PixelSphere.`
+          });
+
+          // Disparar evento de sincronización para que la galería se actualice al instante
+          window.dispatchEvent(new CustomEvent('neural-update', { 
+            detail: { channel: 'MEDIA', data: { userId: activeUserId } } 
+          }));
+
+          if (onImportSuccess) {
+            onImportSuccess();
+          } else {
+            onClose();
+          }
+          return;
+        } else if (data.errors && data.errors.length > 0) {
+          throw new Error(data.errors[0].error || 'No se pudo procesar ningún archivo.');
+        }
+      } catch (batchErr: any) {
+        console.error('[DrivePicker] Error en ingesta batch del servidor:', batchErr);
+        toast({
+          variant: 'destructive',
+          title: 'Error de Importación',
+          description: batchErr.message || 'Error procesando lote de Google Drive'
+        });
+        if (batchErr.message?.includes('Token') || batchErr.message?.includes('expirado') || batchErr.message?.includes('401')) {
+          setAuthError('REQUIRES_AUTH');
+        }
+      } finally {
+        setIsImporting(false);
+        setImportProgress(null);
+      }
+      return;
+    }
+
+    // 2. Fallback de descarga local si no hay sesión activa identificada
+    const downloadedFiles: File[] = [];
     try {
-      for (let i = 0; i < itemsToDownload.length; i++) {
-        const item = itemsToDownload[i];
+      for (let i = 0; i < itemsToProcess.length; i++) {
+        const item = itemsToProcess[i];
         setImportProgress({
           current: i + 1,
-          total: itemsToDownload.length,
+          total: itemsToProcess.length,
           name: item.name
         });
 
@@ -260,15 +392,18 @@ export default function GoogleDrivePicker({ isOpen, onClose, onFilesSelected }: 
         title: 'Archivos Obtenidos',
         description: `Se descargaron ${downloadedFiles.length} archivos desde Google Drive.`
       });
-      onFilesSelected(downloadedFiles);
+      if (onFilesSelected) onFilesSelected(downloadedFiles);
       onClose();
     } catch (err: any) {
       console.error('Error importando desde Drive:', err);
       toast({
         variant: 'destructive',
         title: 'Error de Importación',
-        description: err.message
+        description: err.message || 'Error al descargar archivo desde Google Drive'
       });
+      if (err.message?.includes('Token') || err.message?.includes('expirado') || err.message?.includes('401')) {
+        setAuthError('REQUIRES_AUTH');
+      }
     } finally {
       setIsImporting(false);
       setImportProgress(null);
@@ -362,43 +497,81 @@ export default function GoogleDrivePicker({ isOpen, onClose, onFilesSelected }: 
             </div>
           </div>
 
-          {/* Barra de Migas de Pan (Breadcrumbs) tipo Google Drive */}
-          {viewMode === 'folders' && (
-            <div className="flex items-center gap-2 pt-4 text-xs overflow-x-auto scrollbar-hide">
-              {breadcrumbs.length > 1 && (
-                <Button 
-                  variant="outline" 
-                  size="sm" 
-                  onClick={handleGoUpOneLevel}
-                  className="h-8 px-2.5 rounded-xl border-white/10 bg-white/5 text-white hover:bg-white/10 gap-1.5 shrink-0"
-                >
-                  <ArrowLeft className="h-3.5 w-3.5" />
-                  <span className="text-[11px] font-bold">Subir</span>
-                </Button>
-              )}
-
-              <div className="flex items-center gap-1 bg-white/[0.03] border border-white/5 px-3 py-1.5 rounded-xl shrink-0">
-                {breadcrumbs.map((crumb, idx) => (
-                  <React.Fragment key={crumb.id}>
-                    {idx > 0 && <ChevronRight className="h-3 w-3 shrink-0 text-white/30" />}
-                    <button
-                      type="button"
-                      onClick={() => handleNavigateBreadcrumb(idx)}
-                      className={cn(
-                        "flex items-center gap-1.5 transition-colors font-medium rounded-md px-1.5 py-0.5",
-                        idx === breadcrumbs.length - 1 
-                          ? "text-primary font-bold bg-primary/10" 
-                          : "text-white/60 hover:text-white hover:bg-white/5"
-                      )}
-                    >
-                      {idx === 0 ? <Home className="h-3.5 w-3.5" /> : <Folder className="h-3.5 w-3.5 text-amber-400" />}
-                      <span className="truncate max-w-[140px]">{crumb.name}</span>
-                    </button>
-                  </React.Fragment>
-                ))}
-              </div>
+          {/* Selector de Sección Principal: Mi Unidad vs Compartido conmigo */}
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-4 border-t border-white/5">
+            <div className="flex bg-white/[0.04] p-1 rounded-2xl border border-white/10 shrink-0">
+              <button
+                type="button"
+                onClick={() => handleSwitchSection('my-drive')}
+                className={cn(
+                  "px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2",
+                  driveSection === 'my-drive' 
+                    ? "bg-primary text-white shadow-lg shadow-primary/25" 
+                    : "text-white/60 hover:text-white hover:bg-white/5"
+                )}
+              >
+                <Home className="h-4 w-4" />
+                Mi Unidad
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSwitchSection('shared-with-me')}
+                className={cn(
+                  "px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2",
+                  driveSection === 'shared-with-me' 
+                    ? "bg-primary text-white shadow-lg shadow-primary/25" 
+                    : "text-white/60 hover:text-white hover:bg-white/5"
+                )}
+              >
+                <Users className="h-4 w-4" />
+                Compartido conmigo
+              </button>
             </div>
-          )}
+
+            {/* Barra de Migas de Pan (Breadcrumbs) */}
+            {viewMode === 'folders' && (
+              <div className="flex items-center gap-2 text-xs overflow-x-auto scrollbar-hide flex-1 justify-start sm:justify-end">
+                {breadcrumbs.length > 1 && (
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={handleGoUpOneLevel}
+                    className="h-8 px-2.5 rounded-xl border-white/10 bg-white/5 text-white hover:bg-white/10 gap-1.5 shrink-0"
+                  >
+                    <ArrowLeft className="h-3.5 w-3.5" />
+                    <span className="text-[11px] font-bold">Subir</span>
+                  </Button>
+                )}
+
+                <div className="flex items-center gap-1 bg-white/[0.03] border border-white/5 px-3 py-1.5 rounded-xl shrink-0">
+                  {breadcrumbs.map((crumb, idx) => (
+                    <React.Fragment key={crumb.id}>
+                      {idx > 0 && <ChevronRight className="h-3 w-3 shrink-0 text-white/30" />}
+                      <button
+                        type="button"
+                        onClick={() => handleNavigateBreadcrumb(idx)}
+                        className={cn(
+                          "flex items-center gap-1.5 transition-colors font-medium rounded-md px-1.5 py-0.5",
+                          idx === breadcrumbs.length - 1 
+                            ? "text-primary font-bold bg-primary/10" 
+                            : "text-white/60 hover:text-white hover:bg-white/5"
+                        )}
+                      >
+                        {crumb.id === 'shared-with-me' ? (
+                          <Users className="h-3.5 w-3.5 text-sky-400" />
+                        ) : crumb.id === 'root' ? (
+                          <Home className="h-3.5 w-3.5" />
+                        ) : (
+                          <Folder className="h-3.5 w-3.5 text-amber-400" />
+                        )}
+                        <span className="truncate max-w-[140px]">{crumb.name}</span>
+                      </button>
+                    </React.Fragment>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
         </DialogHeader>
 
         {authError ? (
@@ -511,9 +684,17 @@ export default function GoogleDrivePicker({ isOpen, onClose, onFilesSelected }: 
               <div className="h-80 flex flex-col items-center justify-center gap-3 text-center p-6 border-2 border-dashed border-white/5 rounded-3xl">
                 <FolderOpen className="h-12 w-12 text-muted-foreground/30" />
                 <div>
-                  <p className="text-white font-bold text-sm">Esta carpeta no contiene archivos ni subcarpetas</p>
+                  <p className="text-white font-bold text-sm">
+                    {driveSection === 'shared-with-me' && breadcrumbs.length === 1
+                      ? 'No hay archivos compartidos contigo en este momento' 
+                      : 'Esta carpeta no contiene archivos ni subcarpetas'}
+                  </p>
                   <p className="text-xs text-muted-foreground mt-1">
-                    {breadcrumbs.length > 1 ? 'Puedes subir de nivel con la barra de navegación superior.' : 'Sube archivos a tu Google Drive para verlos aquí.'}
+                    {breadcrumbs.length > 1 
+                      ? 'Puedes subir de nivel con la barra de navegación superior.' 
+                      : driveSection === 'shared-with-me'
+                        ? 'Los archivos y carpetas que otros usuarios compartan con tu cuenta de Google aparecerán aquí.'
+                        : 'Sube archivos a tu Google Drive para verlos aquí.'}
                   </p>
                 </div>
                 {breadcrumbs.length > 1 && (
@@ -665,28 +846,51 @@ export default function GoogleDrivePicker({ isOpen, onClose, onFilesSelected }: 
         )}
 
         <DialogFooter className="p-4 sm:p-6 bg-white/[0.02] border-t border-white/5 flex-row items-center justify-between gap-3">
-          <Button variant="ghost" onClick={onClose} disabled={isImporting} className="rounded-2xl text-white">
-            Cerrar
-          </Button>
+          <div className="flex items-center gap-3">
+            <Button variant="ghost" onClick={onClose} disabled={isImporting} className="rounded-2xl text-white">
+              Cerrar
+            </Button>
+            {selectedItemsMap.size > 0 && (
+              <button
+                type="button"
+                onClick={() => setSelectedItemsMap(new Map())}
+                className="text-xs text-muted-foreground hover:text-red-400 underline font-medium transition-colors hidden sm:inline"
+              >
+                Limpiar selección ({selectedItemsMap.size})
+              </button>
+            )}
+          </div>
 
           {!authError && (
-            <Button
-              onClick={handleImportSelected}
-              disabled={selectedIds.size === 0 || isImporting}
-              className="bg-primary text-white rounded-2xl font-bold px-6 h-11 shadow-xl shadow-primary/20"
-            >
-              {isImporting ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Importando a PixelSphere...
-                </>
-              ) : (
-                <>
-                  <Download className="mr-2 h-4 w-4" />
-                  Importar ({selectedIds.size}) a PixelSphere
-                </>
+            <div className="flex items-center gap-3">
+              {selectedItemsMap.size > 0 && (
+                <span className="text-xs text-white/70 hidden sm:inline font-mono">
+                  {selectedItemsMap.size} {selectedItemsMap.size === 1 ? 'activo listo' : 'activos listos'}
+                </span>
               )}
-            </Button>
+              <Button
+                onClick={handleConfirmSelection}
+                disabled={selectedItemsMap.size === 0 || isImporting}
+                className="bg-primary text-white rounded-2xl font-bold px-6 h-11 shadow-xl shadow-primary/20"
+              >
+                {isImporting ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Procesando...
+                  </>
+                ) : onDriveFilesSelected ? (
+                  <>
+                    <Check className="mr-2 h-4 w-4 stroke-[3]" />
+                    Añadir al Laboratorio ({selectedItemsMap.size})
+                  </>
+                ) : (
+                  <>
+                    <Download className="mr-2 h-4 w-4" />
+                    Importar ({selectedItemsMap.size}) a PixelSphere
+                  </>
+                )}
+              </Button>
+            </div>
           )}
         </DialogFooter>
       </DialogContent>

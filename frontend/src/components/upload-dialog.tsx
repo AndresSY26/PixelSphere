@@ -26,7 +26,8 @@ import {
   ShieldAlert,
   Plus,
   Navigation,
-  FileText
+  FileText,
+  FileVideo
 } from 'lucide-react';
 import {
   Tooltip,
@@ -37,13 +38,18 @@ import {
 import { unlockAchievement } from '@/lib/storage';
 import { useToast } from '@/hooks/use-toast';
 import { User } from '@/lib/types';
-import { cn } from '@/lib/utils';
+import { cn, formatBytes } from '@/lib/utils';
 import Image from 'next/image';
 import GoogleDrivePicker from '@/components/google-drive-picker';
+import { GoogleDriveFile } from '@/lib/google-drive';
+import { getAccessToken } from '@/lib/google-auth';
 
 interface UploadFile {
   id: string;
-  file: File;
+  file?: File;
+  name: string;
+  size: number;
+  mimeType: string;
   preview: string;
   thumbnailB64?: string;
   isPrivate: boolean;
@@ -51,6 +57,8 @@ interface UploadFile {
   status: 'pending' | 'uploading' | 'completed' | 'error';
   progress: number;
   cameraSource?: 'front' | 'back';
+  isFromDrive?: boolean;
+  driveItem?: GoogleDriveFile;
 }
 
 interface UploadDialogProps {
@@ -60,7 +68,7 @@ interface UploadDialogProps {
   onUploadSuccess?: () => void;
 }
 
-const CHUNK_SIZE = 10 * 1024 * 1024; // 10MB
+const CHUNK_SIZE = 4 * 1024 * 1024; // 4MB - Óptimo para estabilidad y rendimiento en subidas de red
 
 export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }: UploadDialogProps) {
   const [uploadQueue, setUploadQueue] = useState<UploadFile[]>([]);
@@ -201,10 +209,14 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
 
   const processCapturedFile = async (file: File) => {
     const thumb = file.type.startsWith('video/') ? await captureVideoFrame(file) : undefined;
+    const isVideo = file.type.startsWith('video/');
     const newEntry: UploadFile = {
       id: Math.random().toString(36).substring(7),
       file,
-      preview: URL.createObjectURL(file),
+      name: file.name,
+      size: file.size,
+      mimeType: file.type || (isVideo ? 'video/mp4' : 'image/jpeg'),
+      preview: thumb || URL.createObjectURL(file),
       thumbnailB64: thumb,
       isPrivate: false,
       isAdultContent: globalAdult,
@@ -230,6 +242,9 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
       newEntries.push({
         id: Math.random().toString(36).substring(7),
         file,
+        name: file.name,
+        size: file.size,
+        mimeType: file.type || (isVideo ? 'video/mp4' : 'image/jpeg'),
         preview: previewUrl,
         thumbnailB64: thumb,
         isPrivate: false,
@@ -239,6 +254,36 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
       });
     }
     setUploadQueue(prev => [...prev, ...newEntries]);
+  };
+
+  const handleDriveFilesSelected = (driveFiles: GoogleDriveFile[]) => {
+    const newEntries: UploadFile[] = driveFiles.map((driveFile) => {
+      return {
+        id: `drive_${driveFile.id}`,
+        name: driveFile.name,
+        size: driveFile.size ? parseInt(driveFile.size, 10) : 0,
+        mimeType: driveFile.mimeType,
+        preview: driveFile.thumbnailLink ? driveFile.thumbnailLink.replace(/=s\d+/, '=s400') : '',
+        isPrivate: false,
+        isAdultContent: globalAdult,
+        status: 'pending',
+        progress: 0,
+        isFromDrive: true,
+        driveItem: driveFile
+      };
+    });
+
+    setUploadQueue(prev => {
+      const existingIds = new Set(prev.map(p => p.id));
+      const filtered = newEntries.filter(e => !existingIds.has(e.id));
+      return [...prev, ...filtered];
+    });
+
+    setIsDrivePickerOpen(false);
+    toast({
+      title: "Activos Añadidos a Ingesta",
+      description: `Se agregaron ${driveFiles.length} archivos de Google Drive a la cola. Revisa el contenido y pulsa Completar Ingesta.`
+    });
   };
 
   const captureVideoFrame = (file: File): Promise<string | undefined> => {
@@ -306,9 +351,63 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
     let completedCount = 0;
     const itemsToUpload = uploadQueue.filter(item => item.status !== 'completed');
 
-    for (let i = 0; i < itemsToUpload.length; i++) {
-      const item = itemsToUpload[i];
-      const file = item.file;
+    const driveItems = itemsToUpload.filter(it => it.isFromDrive && it.driveItem);
+    const localItems = itemsToUpload.filter(it => !it.isFromDrive && it.file);
+
+    // 1. Ingesta de lote de Google Drive (alta velocidad, streaming directo de Google a disco)
+    if (driveItems.length > 0) {
+      try {
+        const token = await getAccessToken();
+        if (!token) {
+          throw new Error('Sesión de Google no disponible o expirada. Por favor abre Drive y reconecta.');
+        }
+
+        setUploadQueue(prev => prev.map(f => f.isFromDrive ? { ...f, status: 'uploading' } : f));
+
+        const batchRes = await fetch('/api/cloud/import-drive-batch', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            userId: user.id,
+            token,
+            items: driveItems.map(it => ({
+              id: it.driveItem!.id,
+              name: it.name,
+              mimeType: it.mimeType,
+              size: it.size,
+              isAdult: it.isAdultContent,
+              isPrivate: it.isPrivate
+            }))
+          })
+        });
+
+        if (!batchRes.ok) {
+          const errData = await batchRes.json().catch(() => ({}));
+          throw new Error(errData.error || `Error en lote de Drive (${batchRes.status})`);
+        }
+
+        const batchData = await batchRes.json();
+        completedCount += batchData.importedCount || driveItems.length;
+
+        setUploadQueue(prev => prev.map(f => f.isFromDrive ? { ...f, status: 'completed', progress: 100 } : f));
+      } catch (driveErr: any) {
+        console.error('Error importando lote de Drive:', driveErr);
+        toast({
+          variant: 'destructive',
+          title: 'Error de Ingesta Drive',
+          description: driveErr.message
+        });
+        setUploadQueue(prev => prev.map(f => f.isFromDrive ? { ...f, status: 'error' } : f));
+      }
+    }
+
+    // 2. Ingesta de archivos locales por fragmentos (chunked upload)
+    for (let i = 0; i < localItems.length; i++) {
+      const item = localItems[i];
+      const file = item.file!;
       const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
       const fileId = Math.random().toString(36).substring(2, 11);
 
@@ -326,7 +425,8 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
 
           const formData = new FormData();
           // Metadatos primero para que el parser de streaming los reciba antes del binario
-          formData.append('userId', user.id);
+          const activeUserId = user?.id || (typeof window !== 'undefined' && localStorage.getItem('ps_active_session') ? JSON.parse(localStorage.getItem('ps_active_session') || '{}')?.id : null) || 'default_user';
+          formData.append('userId', activeUserId);
           formData.append('filename', file.name);
           formData.append('fileId', fileId);
           formData.append('chunkIndex', chunkIndex.toString());
@@ -347,10 +447,25 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
           // El archivo binario se añade al final
           formData.append('chunk', chunk, `${file.name}.part${chunkIndex}`);
 
-          const response = await fetch('/api/upload', { method: 'POST', body: formData });
-          if (!response.ok) {
-            const errData = await response.json().catch(() => ({}));
-            throw new Error(errData.error || `Falla en fragmento ${chunkIndex + 1}/${totalChunks}`);
+          let response: Response | null = null;
+          let lastError: any = null;
+
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              response = await fetch('/api/upload', { method: 'POST', body: formData });
+              if (response.ok) break;
+              const errData = await response.json().catch(() => ({}));
+              lastError = new Error(errData.error || `Error del servidor HTTP ${response.status}`);
+            } catch (netErr: any) {
+              lastError = netErr;
+            }
+            if (attempt < 2) {
+              await new Promise(r => setTimeout(r, 600 * (attempt + 1)));
+            }
+          }
+
+          if (!response || !response.ok) {
+            throw lastError || new Error(`Falla en fragmento ${chunkIndex + 1}/${totalChunks}`);
           }
 
           const progress = Math.round(((chunkIndex + 1) / totalChunks) * 100);
@@ -520,22 +635,78 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
               <ScrollArea className="h-[300px] pr-4">
                 <div className="space-y-3">
                   {uploadQueue.map((item) => (
-                    <div key={item.id} className="flex items-center justify-between p-3 rounded-2xl bg-white/[0.03] border border-white/5">
-                      <div className="flex items-center gap-4">
-                        <div className="w-14 h-14 rounded-xl overflow-hidden relative bg-black flex items-center justify-center">
-                          {item.file.type.startsWith('video/') ? (
-                            <img src={item.thumbnailB64 || item.preview} className="w-full h-full object-cover" />
-                          ) : item.preview ? (
-                            <Image src={item.preview} alt="" fill className="object-cover" />
+                    <div key={item.id} className="flex items-center justify-between p-3 rounded-2xl bg-white/[0.03] border border-white/5 hover:border-white/10 transition-colors">
+                      <div className="flex items-center gap-3.5 min-w-0">
+                        <div className="w-14 h-14 rounded-xl overflow-hidden relative bg-black shrink-0 flex items-center justify-center">
+                          {item.preview ? (
+                            <img src={item.preview} className="w-full h-full object-cover" alt="" />
+                          ) : (item.mimeType || item.file?.type || '').startsWith('video/') ? (
+                            <FileVideo className="h-6 w-6 text-accent" />
                           ) : (
                             <FileText className="h-6 w-6 text-primary" />
                           )}
-                          {item.status === 'uploading' && <div className="absolute inset-0 bg-black/60 flex items-center justify-center flex-col"><Loader2 className="h-4 w-4 text-primary animate-spin" /><span className="text-[8px] font-bold text-white mt-1">{item.progress}%</span></div>}
-                          {item.status === 'completed' && <div className="absolute inset-0 bg-green-500/80 flex items-center justify-center"><CheckCircle2 className="h-6 w-6 text-white" /></div>}
+                          {item.status === 'uploading' && (
+                            <div className="absolute inset-0 bg-black/60 flex items-center justify-center flex-col">
+                              <Loader2 className="h-4 w-4 text-primary animate-spin" />
+                              <span className="text-[8px] font-bold text-white mt-1">{item.progress}%</span>
+                            </div>
+                          )}
+                          {item.status === 'completed' && (
+                            <div className="absolute inset-0 bg-green-500/80 flex items-center justify-center">
+                              <CheckCircle2 className="h-6 w-6 text-white" />
+                            </div>
+                          )}
+                          {item.status === 'error' && (
+                            <div className="absolute inset-0 bg-red-500/80 flex items-center justify-center">
+                              <AlertCircle className="h-6 w-6 text-white" />
+                            </div>
+                          )}
                         </div>
-                        <div className="max-w-[120px] sm:max-w-[180px]"><p className="text-xs font-bold text-white truncate">{item.file.name}</p></div>
+
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-bold text-white truncate" title={item.name}>{item.name}</p>
+                          <div className="flex items-center gap-2 mt-1">
+                            {item.isFromDrive && (
+                              <Badge className="bg-sky-500/20 text-sky-300 border-none text-[8px] px-1.5 py-0 h-4">
+                                Google Drive
+                              </Badge>
+                            )}
+                            <span className="text-[10px] text-muted-foreground font-mono">
+                              {item.size ? formatBytes(item.size) : 'Desconocido'}
+                            </span>
+                          </div>
+                        </div>
                       </div>
-                      <Button variant="ghost" size="icon" onClick={() => setUploadQueue(prev => prev.filter(f => f.id !== item.id))} disabled={isUploading} className="text-muted-foreground hover:text-red-400"><X className="h-5 w-5" /></Button>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setUploadQueue(prev => prev.map(f => f.id === item.id ? { ...f, isAdultContent: !f.isAdultContent } : f));
+                          }}
+                          disabled={isUploading}
+                          title={item.isAdultContent ? 'Marcado como +18' : 'Marcar como +18'}
+                          className={cn(
+                            "px-2.5 py-1.5 rounded-xl text-[10px] font-bold transition-all border flex items-center gap-1.5",
+                            item.isAdultContent 
+                              ? "bg-accent/20 border-accent text-accent shadow-sm" 
+                              : "bg-white/5 border-white/10 text-muted-foreground hover:text-white"
+                          )}
+                        >
+                          <ShieldAlert className="h-3 w-3" />
+                          <span>{item.isAdultContent ? '+18' : 'Normal'}</span>
+                        </button>
+
+                        <Button 
+                          variant="ghost" 
+                          size="icon" 
+                          onClick={() => setUploadQueue(prev => prev.filter(f => f.id !== item.id))} 
+                          disabled={isUploading} 
+                          className="text-muted-foreground hover:text-red-400 h-8 w-8 rounded-lg"
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -561,9 +732,8 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
       <GoogleDrivePicker
         isOpen={isDrivePickerOpen}
         onClose={() => setIsDrivePickerOpen(false)}
-        onFilesSelected={(driveFiles) => {
-          processFiles(driveFiles);
-        }}
+        userId={user?.id}
+        onDriveFilesSelected={handleDriveFilesSelected}
       />
     </Dialog>
   );

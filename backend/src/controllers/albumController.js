@@ -10,8 +10,11 @@ import {
 
 export async function listAlbums(req, res) {
   try {
-    const { userId } = req.query;
-    const albums = userId ? await getAlbumsByUser(userId) : await getAlbums();
+    const { userId, all } = req.query;
+    let albums = await getAlbums();
+    if (userId && all === 'false') {
+      albums = albums.filter(a => a.userId === userId);
+    }
     return res.json(albums);
   } catch (error) {
     console.error('[AlbumController] Error al listar álbumes:', error);
@@ -40,14 +43,15 @@ export async function createAlbum(req, res) {
     }
 
     const newAlbum = {
-      id: Math.random().toString(36).substring(2, 11),
+      id: req.body.id || Math.random().toString(36).substring(2, 11),
       userId,
       title,
       description: description || '',
       parentId: parentId || null,
       coverMediaId: coverMediaId || null,
+      mediaIds: Array.isArray(req.body.mediaIds) ? req.body.mediaIds : [],
       isPrivate: !!isPrivate,
-      createdAt: new Date().toISOString()
+      createdAt: req.body.createdAt || new Date().toISOString()
     };
 
     const saved = await createAlbumStorage(newAlbum);

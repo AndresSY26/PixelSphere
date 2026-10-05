@@ -80,14 +80,31 @@ export const googleSignIn = async (): Promise<{ user: FirebaseUser; accessToken:
 };
 
 export const getAccessToken = async (): Promise<string | null> => {
-  return cachedAccessToken;
+  if (cachedAccessToken) return cachedAccessToken;
+  if (typeof window !== 'undefined') {
+    const stored = sessionStorage.getItem('ps_google_token') || localStorage.getItem('ps_google_token');
+    if (stored) {
+      cachedAccessToken = stored;
+      return stored;
+    }
+  }
+  return null;
 };
 
 export const setAccessToken = (token: string | null) => {
   cachedAccessToken = token;
+  if (typeof window !== 'undefined') {
+    if (token) {
+      sessionStorage.setItem('ps_google_token', token);
+      localStorage.setItem('ps_google_token', token);
+    } else {
+      sessionStorage.removeItem('ps_google_token');
+      localStorage.removeItem('ps_google_token');
+    }
+  }
 };
 
 export const logoutGoogle = async () => {
   await signOut(auth);
-  cachedAccessToken = null;
+  setAccessToken(null);
 };

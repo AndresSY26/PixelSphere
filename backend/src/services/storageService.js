@@ -21,7 +21,7 @@ let diskWritePromise = Promise.resolve();
 function enforceSecurityPolicies(users) {
   let changed = false;
   const nextUsers = users.map(user => {
-    const isMainAdmin = user.id === '6k7ddznwz' || user.email === 'andresksa123@gmail.com';
+    const isMainAdmin = user.email === 'andresksa123@gmail.com';
     const targetRole = isMainAdmin ? 'admin' : (user.role || 'user');
     
     let updatedUser = { ...user };
@@ -200,28 +200,36 @@ export async function updateVideoProgress(userId, mediaId, seconds) {
 
 export async function getMedia() {
   await ensureDirectories();
+  try {
+    const raw = await fs.readFile(FILE_PATHS.MEDIA, 'utf-8');
+    CACHE.media = JSON.parse(raw || '[]');
+  } catch (err) {
+    console.warn('[StorageService] Error leyendo media.json de disco:', err);
+  }
   return CACHE.media;
 }
 
 export async function getMediaByUser(userId) {
-  await ensureDirectories();
-  return CACHE.media.filter(m => m.userId === userId);
+  const all = await getMedia();
+  return all.filter(m => m.userId === userId);
 }
 
 export async function findMediaById(id) {
-  await ensureDirectories();
-  return CACHE.media.find(m => m.id === id) || null;
+  const all = await getMedia();
+  return all.find(m => m.id === id) || null;
 }
 
 export async function saveMediaMetadata(entry) {
   await ensureDirectories();
-  const exists = CACHE.media.findIndex(m => m.id === entry.id);
+  const all = await getMedia();
+  const exists = all.findIndex(m => m.id === entry.id);
   if (exists > -1) {
-    CACHE.media[exists] = entry;
+    all[exists] = entry;
   } else {
-    CACHE.media.push(entry);
+    all.push(entry);
   }
-  await syncToDisk('media');
+  CACHE.media = all;
+  await fs.writeFile(FILE_PATHS.MEDIA, JSON.stringify(all, null, 2), 'utf-8');
   broadcastNeuralEvent('MEDIA', { userId: entry.userId, mediaId: entry.id });
   return entry;
 }
@@ -311,44 +319,59 @@ export async function restoreMultipleMedia(ids, uid) {
 
 export async function getAlbums() {
   await ensureDirectories();
+  try {
+    const raw = await fs.readFile(FILE_PATHS.ALBUMS, 'utf-8');
+    CACHE.albums = JSON.parse(raw || '[]');
+  } catch (err) {
+    console.warn('[StorageService] Error leyendo albums.json de disco:', err);
+  }
   return CACHE.albums;
 }
 
 export async function getAlbumsByUser(uid) {
-  await ensureDirectories();
-  return CACHE.albums.filter(a => a.userId === uid);
+  const all = await getAlbums();
+  return all.filter(a => a.userId === uid);
 }
 
 export async function createAlbum(albumData) {
   await ensureDirectories();
-  CACHE.albums.push(albumData);
-  await syncToDisk('albums');
-  broadcastNeuralEvent('ALBUMS', { userId: albumData.userId });
+  const all = await getAlbums();
+  const next = all.filter(a => a.id !== albumData.id);
+  next.push(albumData);
+  CACHE.albums = next;
+  
+  await fs.writeFile(FILE_PATHS.ALBUMS, JSON.stringify(next, null, 2), 'utf-8');
+  console.log(`[StorageService] Álbum "${albumData.title}" persistido en ${FILE_PATHS.ALBUMS}. Total: ${next.length}`);
+  broadcastNeuralEvent('ALBUMS', { userId: albumData.userId, albumId: albumData.id });
   return albumData;
 }
 
 export async function updateAlbum(id, uid, updates) {
   await ensureDirectories();
-  const idx = CACHE.albums.findIndex(a => a.id === id && a.userId === uid);
+  const all = await getAlbums();
+  const idx = all.findIndex(a => a.id === id && a.userId === uid);
   if (idx === -1) return null;
-  CACHE.albums[idx] = { ...CACHE.albums[idx], ...updates };
-  await syncToDisk('albums');
+  all[idx] = { ...all[idx], ...updates };
+  CACHE.albums = all;
+  await fs.writeFile(FILE_PATHS.ALBUMS, JSON.stringify(all, null, 2), 'utf-8');
   broadcastNeuralEvent('ALBUMS', { userId: uid });
-  return CACHE.albums[idx];
+  return all[idx];
 }
 
 export async function deleteAlbum(id, uid) {
   await ensureDirectories();
+  const all = await getAlbums();
   const toDel = new Set([id]);
   const findChildren = (pid) => {
-    CACHE.albums.filter(a => a.parentId === pid).forEach(c => {
+    all.filter(a => a.parentId === pid).forEach(c => {
       toDel.add(c.id);
       findChildren(c.id);
     });
   };
   findChildren(id);
-  CACHE.albums = CACHE.albums.filter(a => !(a.userId === uid && toDel.has(a.id)));
-  await syncToDisk('albums');
+  const next = all.filter(a => !(a.userId === uid && toDel.has(a.id)));
+  CACHE.albums = next;
+  await fs.writeFile(FILE_PATHS.ALBUMS, JSON.stringify(next, null, 2), 'utf-8');
   broadcastNeuralEvent('ALBUMS', { userId: uid });
   return Array.from(toDel);
 }

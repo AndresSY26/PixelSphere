@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
@@ -25,7 +26,7 @@ async function startServer() {
     origin: true,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Range']
+    allowedHeaders: ['*']
   }));
 
   // Parsers
@@ -59,6 +60,43 @@ async function startServer() {
   const isProduction = process.env.NODE_ENV === 'production';
   const frontendDir = path.resolve(__dirname, 'frontend');
   const distDir = path.resolve(frontendDir, 'dist');
+  const publicDir = path.resolve(frontendDir, 'public');
+
+  // Explicit PWA Service Worker handler with exact MIME type
+  app.get('/sw.js', (req, res) => {
+    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    res.setHeader('Service-Worker-Allowed', '/');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+
+    const swDist = path.join(distDir, 'sw.js');
+    const swPublic = path.join(publicDir, 'sw.js');
+
+    if (fs.existsSync(swDist)) {
+      return res.sendFile(swDist);
+    }
+    if (fs.existsSync(swPublic)) {
+      return res.sendFile(swPublic);
+    }
+    return res.status(200).send('self.addEventListener("install", () => self.skipWaiting()); self.addEventListener("activate", (e) => e.waitUntil(clients.claim()));');
+  });
+
+  // Explicit PWA Manifest handler
+  app.get('/manifest.json', (req, res) => {
+    res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+    const manifestDist = path.join(distDir, 'manifest.json');
+    const manifestPublic = path.join(publicDir, 'manifest.json');
+
+    if (fs.existsSync(manifestDist)) {
+      return res.sendFile(manifestDist);
+    }
+    if (fs.existsSync(manifestPublic)) {
+      return res.sendFile(manifestPublic);
+    }
+    return res.status(404).send('Not found');
+  });
+
+  // Static assets from frontend/public
+  app.use(express.static(publicDir));
 
   if (!isProduction) {
     const { createServer: createViteServer } = await import('vite');
@@ -81,9 +119,12 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`[PixelSphere] Servidor activo en http://0.0.0.0:${PORT}`);
   });
+  server.keepAliveTimeout = 120000;
+  server.headersTimeout = 125000;
+  server.requestTimeout = 0;
 }
 
 startServer().catch((err) => {

@@ -209,8 +209,8 @@ export async function getUnifiedDashboardData(uid) {
 
 export async function getGalleryLeanData(uid) {
   const [media, albums] = await Promise.all([
-    api.media.list({ userId: uid }).catch(() => []),
-    api.albums.list(uid).catch(() => [])
+    api.media.list().catch(() => []),
+    api.albums.list().catch(() => [])
   ]);
   return { media, albums };
 }
@@ -279,6 +279,10 @@ export async function updateUserFilterPreferences(uid, sec, pref) {
 
 export async function saveAvatarFile(uid, b64) {
   return b64;
+}
+
+export async function inspectDatabase() {
+  return api.database.inspect();
 }
 
 // Helpers de cifrado en cliente (bóveda)

@@ -18,7 +18,8 @@ export interface GoogleDriveFile {
 }
 
 export interface ListDriveFilesParams {
-  folderId?: string | null; // ID de carpeta o 'root' o null para ver todo plano
+  folderId?: string | null; // ID de carpeta o 'root' o 'shared-with-me'
+  sharedWithMe?: boolean;
   query?: string;
   filterType?: 'all' | 'media' | 'images' | 'videos' | 'docs';
   pageToken?: string | null;
@@ -34,12 +35,16 @@ export async function listDriveFiles(
   accessToken: string,
   params: ListDriveFilesParams = {}
 ): Promise<ListDriveResponse> {
-  const { folderId, query, filterType = 'all', pageToken, pageSize = 100 } = params;
+  const { folderId, sharedWithMe, query, filterType = 'all', pageToken, pageSize = 100 } = params;
 
   const conditions: string[] = ['trashed = false'];
 
-  // Si se especifica una carpeta concreta, filtrar por esa carpeta
-  if (folderId) {
+  const isSharedRoot = sharedWithMe || folderId === 'shared-with-me';
+
+  // Si se solicita la raíz de compartidos conmigo
+  if (isSharedRoot) {
+    conditions.push('sharedWithMe = true');
+  } else if (folderId) {
     const safeFolder = folderId.replace(/'/g, "\\'");
     conditions.push(`'${safeFolder}' in parents`);
   }
@@ -112,76 +117,41 @@ export async function downloadDriveFile(
   mimeType: string,
   thumbnailLink?: string
 ): Promise<File> {
-  // Manejo de exportación de Google Docs / Sheets / Slides nativos
-  if (mimeType === 'application/vnd.google-apps.document') {
-    const expUrl = `https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=application/pdf`;
-    const res = await fetch(expUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
-    if (!res.ok) throw new Error(`Error exportando documento ${fileName}`);
-    const blob = await res.blob();
-    return new File([blob], `${fileName.replace(/\.pdf$/i, '')}.pdf`, { type: 'application/pdf' });
+  const isGoogleDoc = (
+    mimeType === 'application/vnd.google-apps.document' ||
+    mimeType === 'application/vnd.google-apps.spreadsheet' ||
+    mimeType === 'application/vnd.google-apps.presentation'
+  );
+
+  // Descarga limpia a través del proxy del backend (resuelve de raíz bloqueos de CORS y redirects 302 de Google Drive)
+  const proxyUrl = `/api/cloud/drive-file?fileId=${encodeURIComponent(fileId)}&mimeType=${encodeURIComponent(mimeType || '')}${isGoogleDoc ? '&export=true' : ''}`;
+  
+  let proxyRes: Response;
+  try {
+    proxyRes = await fetch(proxyUrl, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+  } catch (netErr: any) {
+    throw new Error(`No se pudo conectar con el servicio local de descarga: ${netErr.message}`);
   }
 
-  if (mimeType === 'application/vnd.google-apps.spreadsheet') {
-    const expUrl = `https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=application/pdf`;
-    const res = await fetch(expUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
-    if (!res.ok) throw new Error(`Error exportando hoja de cálculo ${fileName}`);
-    const blob = await res.blob();
-    return new File([blob], `${fileName.replace(/\.pdf$/i, '')}.pdf`, { type: 'application/pdf' });
-  }
-
-  if (mimeType === 'application/vnd.google-apps.presentation') {
-    const expUrl = `https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=application/pdf`;
-    const res = await fetch(expUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
-    if (!res.ok) throw new Error(`Error exportando presentación ${fileName}`);
-    const blob = await res.blob();
-    return new File([blob], `${fileName.replace(/\.pdf$/i, '')}.pdf`, { type: 'application/pdf' });
-  }
-
-  // Descarga de archivo binario (videos, imágenes, audios, zips)
-  // IMPORTANTE: acknowledgeAbuse=true evita que Google Drive responda con página HTML de advertencia de virus en videos grandes
-  // access_token en query string previene la pérdida de headers de autenticación en redirecciones entre dominios de Google
-  const url = new URL(`https://www.googleapis.com/drive/v3/files/${fileId}`);
-  url.searchParams.set('alt', 'media');
-  url.searchParams.set('supportsAllDrives', 'true');
-  url.searchParams.set('acknowledgeAbuse', 'true');
-  url.searchParams.set('access_token', accessToken);
-
-  const response = await fetch(url.toString(), {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Error descargando archivo ${fileName} desde Google Drive (${response.statusText})`);
-  }
-
-  let blob = await response.blob();
-
-  // Detección y recuperación en caso de que Google retorne HTML de aviso de virus
-  if (blob.type.includes('text/html') || (blob.size < 50000 && !fileName.endsWith('.html'))) {
+  if (!proxyRes.ok) {
+    let errorMsg = `Error descargando ${fileName} (${proxyRes.status})`;
     try {
-      const textSample = await blob.slice(0, 1500).text();
-      if (textSample.includes('<!DOCTYPE html>') || textSample.includes('<html') || textSample.includes('Virus scan warning') || textSample.includes('download_warning')) {
-        console.warn(`[GoogleDrive] Archivo ${fileName} retornó pantalla intermedia de Google. Intentando confirmar descarga...`);
-        const confirmMatch = textSample.match(/confirm=([a-zA-Z0-9_-]+)/) || textSample.match(/name="confirm" value="([a-zA-Z0-9_-]+)"/);
-        const confirmToken = confirmMatch ? confirmMatch[1] : 't';
-        const retryUrl = `https://drive.google.com/uc?export=download&id=${fileId}&confirm=${confirmToken}&access_token=${encodeURIComponent(accessToken)}`;
-        const retryRes = await fetch(retryUrl);
-        if (retryRes.ok) {
-          const retryBlob = await retryRes.blob();
-          if (!retryBlob.type.includes('text/html')) {
-            blob = retryBlob;
-          }
-        }
+      const errJson = await proxyRes.json();
+      if (errJson?.error) {
+        errorMsg = errJson.error;
       }
-    } catch (parseErr) {
-      console.warn('[GoogleDrive] No se pudo verificar la cabecera del blob:', parseErr);
-    }
+    } catch (e) {}
+    throw new Error(errorMsg);
   }
 
-  // Normalizar mimeType de videos o imágenes según extensión para garantizar compatibilidad
-  let cleanMime = mimeType;
+  const blob = await proxyRes.blob();
+
+  // Determinar mimeType limpio
+  let cleanMime = isGoogleDoc ? 'application/pdf' : mimeType;
   if (!cleanMime || cleanMime === 'application/octet-stream') {
     if (/\.mp4$/i.test(fileName)) cleanMime = 'video/mp4';
     else if (/\.webm$/i.test(fileName)) cleanMime = 'video/webm';
@@ -190,12 +160,14 @@ export async function downloadDriveFile(
     else if (/\.avi$/i.test(fileName)) cleanMime = 'video/x-msvideo';
     else if (/\.jpg|\.jpeg$/i.test(fileName)) cleanMime = 'image/jpeg';
     else if (/\.png$/i.test(fileName)) cleanMime = 'image/png';
+    else if (/\.webp$/i.test(fileName)) cleanMime = 'image/webp';
     else cleanMime = blob.type || 'application/octet-stream';
   }
 
-  const file = new File([blob], fileName, { type: cleanMime });
+  const outName = isGoogleDoc && !fileName.endsWith('.pdf') ? `${fileName.replace(/\.[^.]+$/, '')}.pdf` : fileName;
+  const file = new File([blob], outName, { type: cleanMime });
 
-  // Si Google Drive ya nos proporcionó thumbnailLink, intentar obtenerlo como base64 para asociarlo
+  // Asociar thumbnail si existe
   if (thumbnailLink) {
     try {
       const highResThumb = thumbnailLink.replace(/=s\d+/, '=s600');

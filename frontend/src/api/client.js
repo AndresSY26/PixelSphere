@@ -85,5 +85,8 @@ export const api = {
   },
   stream: {
     getUrl: () => `${BASE_URL}/neural-stream`,
+  },
+  database: {
+    inspect: () => request('/database/inspect'),
   }
 };

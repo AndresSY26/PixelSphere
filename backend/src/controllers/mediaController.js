@@ -19,8 +19,13 @@ import { autoTagImage } from '../services/geminiService.js';
 
 export async function listMedia(req, res) {
   try {
-    const { userId, type, isDeleted, isPrivate, albumId, query } = req.query;
-    let items = userId ? await getMediaByUser(userId) : await getMedia();
+    const { userId, type, isDeleted, isPrivate, albumId, query, all } = req.query;
+    // Mostrar todo el contenido multimedia guardado en el nodo para que sea visible con o sin Google login
+    let items = await getMedia();
+
+    if (userId && all === 'false') {
+      items = items.filter(m => m.userId === userId);
+    }
 
     if (isDeleted !== undefined) {
       const showDeleted = isDeleted === 'true';

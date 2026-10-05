@@ -3,7 +3,9 @@
 import { useState, useEffect, useMemo, useCallback, memo, useRef } from 'react';
 import DashboardLayout from '@/components/dashboard-layout';
 import { 
+  getAlbums,
   getAlbumsByUser, 
+  getMedia,
   getMediaByUser, 
   createAlbum, 
   deleteAlbum,
@@ -20,6 +22,7 @@ import {
   updateUserFilterPreferences
 } from '@/lib/storage';
 import { Album, Media, User } from '@/lib/types';
+import { DatabaseInspectorDialog } from '@/components/database-inspector-dialog';
 import { 
   FolderPlus, 
   Plus, 
@@ -156,25 +159,31 @@ export default function AlbumsPage() {
   const fetchData = useCallback(async (silent = false) => {
     try {
       if (!silent) setLoading(true);
-      const sessionData = localStorage.getItem('ps_active_session');
+      const sessionData = localStorage.getItem('ps_active_session') || localStorage.getItem('pixelsphere_session_user');
+      let currentUser: User | null = null;
       if (sessionData) {
-        const currentUser = JSON.parse(sessionData) as User;
-        setUser(currentUser);
-        
-        if (!silent && currentUser.filterPreferences?.albums?.sortBy) {
-          setAlbumSortBy(currentUser.filterPreferences.albums.sortBy as AlbumSortType);
+        try {
+          currentUser = JSON.parse(sessionData) as User;
+          setUser(currentUser);
+          
+          if (!silent && currentUser.filterPreferences?.albums?.sortBy) {
+            setAlbumSortBy(currentUser.filterPreferences.albums.sortBy as AlbumSortType);
+          }
+        } catch (e) {
+          console.warn("Error parseando usuario local:", e);
         }
+      }
 
-        const [userAlbums, userMedia] = await Promise.all([
-          getAlbumsByUser(currentUser.id),
-          getMediaByUser(currentUser.id)
-        ]);
-        setAllAlbums(userAlbums);
-        setMedia(userMedia.filter(m => !m.isDeleted));
-        
-        if (!silent) {
-          getFrequentContacts(currentUser.id).then(setFrequentContacts);
-        }
+      // Cargar todos los álbumes y medios del nodo para visualización unificada
+      const [userAlbums, userMedia] = await Promise.all([
+        getAlbums(),
+        getMedia()
+      ]);
+      setAllAlbums(userAlbums || []);
+      setMedia((userMedia || []).filter(m => !m.isDeleted));
+      
+      if (!silent && currentUser?.id) {
+        getFrequentContacts(currentUser.id).then(setFrequentContacts);
       }
     } catch (error) {
       console.error("Falla en actualización de álbumes:", error);
@@ -224,13 +233,14 @@ export default function AlbumsPage() {
   }, [allAlbums, currentAlbumId]);
 
   const handleCreateAlbum = async () => {
-    if (!newAlbumTitle.trim() || !user) return;
+    if (!newAlbumTitle.trim()) return;
     setIsCreating(true);
     try {
+      const activeUserId = user?.id || (typeof window !== 'undefined' && localStorage.getItem('ps_active_session') ? JSON.parse(localStorage.getItem('ps_active_session') || '{}')?.id : null) || 'default_user';
       const album: Album = {
         id: Math.random().toString(36).substring(2, 11),
-        userId: user.id,
-        parentId: currentAlbumId || undefined,
+        userId: activeUserId,
+        parentId: currentAlbumId || null,
         title: newAlbumTitle.trim(),
         description: newAlbumDesc.trim(),
         mediaIds: [],
@@ -238,16 +248,26 @@ export default function AlbumsPage() {
         theme: 'compact',
         createdAt: new Date().toISOString()
       };
-      await createAlbum(album);
-      await unlockAchievement(user.id, 'album_creator');
       
-      toast({ title: "Colección Creada", description: `"${album.title}" lista para ingesta.` });
+      const created = await createAlbum(album);
+      const savedAlbum = created || album;
+      
+      // Actualizar inmediatamente la vista y la lista local
+      setAllAlbums(prev => [savedAlbum, ...prev.filter(a => a.id !== savedAlbum.id)]);
+      fetchData(true);
+      window.dispatchEvent(new CustomEvent('neural-update', { detail: { channel: 'ALBUMS' } }));
+      
+      if (user?.id) {
+        unlockAchievement(user.id, 'album_creator').catch(() => {});
+      }
+      
+      toast({ title: "Colección Creada", description: `"${savedAlbum.title}" lista para ingesta.` });
       setIsCreateOpen(false);
       setNewAlbumTitle('');
       setNewAlbumDesc('');
     } catch (error) {
       console.error("Error al crear álbum:", error);
-      toast({ title: "Error", variant: "destructive" });
+      toast({ title: "Error al crear álbum", variant: "destructive" });
     } finally {
       setIsCreating(false);
     }
@@ -406,7 +426,7 @@ export default function AlbumsPage() {
   }, []);
 
   const filteredSubAlbums = useMemo(() => {
-    let result = allAlbums.filter(a => a.parentId === (currentAlbumId || undefined));
+    let result = allAlbums.filter(a => (a.parentId || null) === (currentAlbumId || null));
     if (searchQuery) result = result.filter(a => a.title.toLowerCase().includes(searchQuery.toLowerCase()));
     
     result.sort((a, b) => {
@@ -498,7 +518,7 @@ export default function AlbumsPage() {
   }, [media, selectorSearchQuery]);
 
   const AlbumBrowser = ({ onSelect, onRemove }: { onSelect: (id: string) => void, onRemove: (id: string) => void }) => {
-    const currentList = useMemo(() => allAlbums.filter(a => a.parentId === (linkNavParentId || undefined)), [linkNavParentId, allAlbums]);
+    const currentList = useMemo(() => allAlbums.filter(a => (a.parentId || null) === (linkNavParentId || null)), [linkNavParentId, allAlbums]);
     const parentAlbum = useMemo(() => allAlbums.find(a => a.id === linkNavParentId), [linkNavParentId, allAlbums]);
     const isAlreadyLinked = selectedMedia ? parentAlbum?.mediaIds.includes(selectedMedia.id) : false;
 
@@ -602,7 +622,8 @@ export default function AlbumsPage() {
               ))}
             </div>
           </div>
-          <div className="flex gap-3">
+          <div className="flex items-center gap-3">
+            <DatabaseInspectorDialog />
             {currentAlbumId && (
               <Button onClick={() => setIsMediaSelectorOpen(true)} variant="outline" className="border-accent/30 text-accent hover:bg-accent/10 rounded-xl h-12 px-6">
                 <PlusCircle className="mr-2 h-5 w-5" /> Añadir Activos

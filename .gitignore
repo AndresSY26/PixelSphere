@@ -11,9 +11,8 @@ out/
 *.tsbuildinfo
 
 # Physical Persistence & Uploads
-backend/uploads/
-backend/data/
-data/
+backend/uploads/*
+!backend/uploads/.gitkeep
 public/uploads/
 
 # Environment Variables & Secrets

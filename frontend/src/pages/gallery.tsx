@@ -121,26 +121,32 @@ export default function GalleryPage() {
   const fetchData = useCallback(async (silent = false) => {
     try {
       if (!silent) setLoading(true);
-      const sessionData = localStorage.getItem('ps_active_session');
+      const sessionData = localStorage.getItem('ps_active_session') || localStorage.getItem('pixelsphere_session_user');
+      let currentUser: User | null = null;
       if (sessionData) {
-        const currentUser = JSON.parse(sessionData) as User;
-        setUser(currentUser);
-        
-        if (!silent && currentUser.filterPreferences?.gallery) {
-          const prefs = currentUser.filterPreferences.gallery;
-          if (prefs.viewMode) setViewMode(prefs.viewMode);
-          if (prefs.filterType) setFilterType(prefs.filterType);
-          if (prefs.adultFilter) setAdultFilter(prefs.adultFilter);
-          if (prefs.sortBy) setSortBy(prefs.sortBy);
+        try {
+          currentUser = JSON.parse(sessionData) as User;
+          setUser(currentUser);
+          
+          if (!silent && currentUser.filterPreferences?.gallery) {
+            const prefs = currentUser.filterPreferences.gallery;
+            if (prefs.viewMode) setViewMode(prefs.viewMode);
+            if (prefs.filterType) setFilterType(prefs.filterType);
+            if (prefs.adultFilter) setAdultFilter(prefs.adultFilter);
+            if (prefs.sortBy) setSortBy(prefs.sortBy);
+          }
+        } catch (e) {
+          console.warn("Sesión local no parseable:", e);
         }
+      }
 
-        const { media: userMedia, albums: userAlbums } = await getGalleryLeanData(currentUser.id);
-        setMedia(userMedia.filter(m => !m.isPrivate && !m.isDeleted));
-        setAlbums(userAlbums);
-        
-        if (!silent) {
-          getFrequentContacts(currentUser.id).then(setFrequentContacts);
-        }
+      // Cargar siempre todo el catálogo del nodo para que sea visible con o sin Google Login
+      const { media: userMedia, albums: userAlbums } = await getGalleryLeanData(currentUser?.id || 'all');
+      setMedia(userMedia.filter(m => !m.isPrivate && !m.isDeleted));
+      setAlbums(userAlbums);
+      
+      if (!silent && currentUser?.id) {
+        getFrequentContacts(currentUser.id).then(setFrequentContacts);
       }
     } catch (error) {
       console.error("Falla en actualización de galería:", error);
