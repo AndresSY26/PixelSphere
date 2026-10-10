@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo, Suspense, useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
 import DashboardLayout from '@/components/dashboard-layout';
-import { getUnifiedDashboardData, deleteMedia, updateMedia, addMultipleToAlbum, removeMultipleFromAlbum, updateUserFilterPreferences } from '@/lib/storage';
+import { getUnifiedDashboardData, deleteMedia, updateMedia, addMultipleToAlbum, removeMultipleFromAlbum, updateUserFilterPreferences, recordMediaView } from '@/lib/storage';
 import { Media, Album, User } from '@/lib/types';
 import { 
   Search, 
@@ -188,9 +188,9 @@ function SearchResultsContent() {
   }, [albums, media, query, filterType, adultFilter, sortBy]);
 
   const handleDelete = async (id: string) => {
-    if (!user) return;
+    const activeUid = user?.id || getStoredUser()?.id || 'all';
     try {
-      await deleteMedia(id, user.id);
+      await deleteMedia(id, activeUid);
       setMedia(prev => prev.filter(m => m.id !== id));
       toast({ title: "Movido a Papelera", description: "Tienes 30 días para recuperarlo." });
       setSelectedMedia(null);
@@ -278,6 +278,12 @@ function SearchResultsContent() {
   };
 
   const openViewer = (item: Media) => {
+    if (user) {
+      recordMediaView(user.id, item.id, {
+        source: 'Búsqueda Global',
+        deviceName: /mobile|android|iphone/i.test(navigator?.userAgent || '') ? 'Dispositivo Móvil' : 'Escritorio'
+      });
+    }
     if (item.isAdultContent) {
       setAdultToConfirm(item);
     } else {
@@ -531,6 +537,12 @@ function SearchResultsContent() {
             <Button 
               className="flex-1 bg-accent text-accent-foreground font-bold rounded-xl h-12"
               onClick={() => {
+                if (user && adultToConfirm) {
+                  recordMediaView(user.id, adultToConfirm.id, {
+                    source: 'Búsqueda Global',
+                    deviceName: /mobile|android|iphone/i.test(navigator?.userAgent || '') ? 'Dispositivo Móvil' : 'Escritorio'
+                  });
+                }
                 setSelectedMedia(adultToConfirm);
                 setAdultToConfirm(null);
                 setTagInput('');
@@ -552,7 +564,7 @@ function SearchResultsContent() {
                   <X className="h-6 w-6" />
                 </Button>
                 {selectedMedia.type === 'video' ? (
-                  <NeuralVideoPlayer src={selectedMedia.url} className="w-full h-full" />
+                  <NeuralVideoPlayer key={selectedMedia.id} src={selectedMedia.url} mediaId={selectedMedia.id} className="w-full h-full" />
                 ) : (
                   <img src={selectedMedia.url} className="w-full h-full object-contain" alt="" />
                 )}

@@ -1,6 +1,6 @@
 /**
  * PIXELSPHERE API CLIENT
- * Capa centralizada de conexión con el backend de Node.js en http://localhost:5000/api
+ * Capa centralizada de conexión con el backend REST (/api)
  */
 
 const BASE_URL = import.meta.env.VITE_API_URL || '/api';
@@ -47,6 +47,7 @@ export const api = {
     saveUser: (user) => request('/auth/save', { method: 'POST', body: JSON.stringify(user) }),
     getProfile: (userId) => request(`/auth/profile/${userId}`),
     updateProfile: (userId, data) => request(`/auth/profile/${userId}`, { method: 'PUT', body: JSON.stringify(data) }),
+    updatePlan: (userId, plan) => request('/auth/plan', { method: 'POST', body: JSON.stringify({ userId, plan }) }),
   },
   media: {
     list: (params = {}) => {
@@ -56,10 +57,12 @@ export const api = {
     getById: (id) => request(`/media/${id}`),
     upload: (formData) => request('/media/upload', { method: 'POST', body: formData }),
     update: (id, userId, updates) => request(`/media/${id}`, { method: 'PUT', body: JSON.stringify({ userId, updates }) }),
-    delete: (id, userId) => request(`/media/${id}`, { method: 'DELETE', body: JSON.stringify({ userId }) }),
-    deleteMultiple: (ids, userId) => request('/media/delete-multiple', { method: 'POST', body: JSON.stringify({ ids, userId }) }),
+    delete: (id, userId, permanent = false) => request(`/media/${id}?permanent=${permanent}`, { method: 'DELETE', body: JSON.stringify({ userId, permanent }) }),
+    deleteMultiple: (ids, userId, permanent = false) => request('/media/delete-multiple', { method: 'POST', body: JSON.stringify({ ids, userId, permanent }) }),
     restoreMultiple: (ids, userId) => request('/media/restore-multiple', { method: 'POST', body: JSON.stringify({ ids, userId }) }),
-    recordView: (id, userId) => request(`/media/${id}/view`, { method: 'POST', body: JSON.stringify({ userId }) }),
+    emptyTrash: (userId) => request('/media/trash/empty', { method: 'POST', body: JSON.stringify({ userId }) }),
+    cleanupTrash: (days = 30) => request('/media/trash/cleanup', { method: 'POST', body: JSON.stringify({ days }) }),
+    recordView: (id, userId, meta = {}) => request(`/media/${id}/view`, { method: 'POST', body: JSON.stringify({ userId, ...meta }) }),
     saveProgress: (id, userId, seconds) => request(`/media/${id}/progress`, { method: 'POST', body: JSON.stringify({ userId, seconds }) }),
     getStreamUrl: (id) => `${BASE_URL}/media/${id}/stream`,
   },
@@ -83,11 +86,17 @@ export const api = {
     getAdmin: () => request('/stats/admin'),
     getAchievements: (userId) => request(`/stats/achievements/${userId}`),
     getHistory: (userId) => request(`/stats/history/${userId}`),
+    clearHistory: (userId) => request(`/stats/history/${userId}`, { method: 'DELETE' }),
   },
   stream: {
     getUrl: () => `${BASE_URL}/neural-stream`,
   },
   database: {
     inspect: () => request('/database/inspect'),
+  },
+  payments: {
+    getGooglePayConfig: () => request('/payments/config/google-pay'),
+    processGooglePay: (data) => request('/payments/google-pay/process', { method: 'POST', body: JSON.stringify(data) }),
+    getHistory: (userId) => request(`/payments/history/${userId}`),
   }
 };

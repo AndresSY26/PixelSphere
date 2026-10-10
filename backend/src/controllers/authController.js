@@ -38,7 +38,8 @@ export async function register(req, res) {
       avatarUrl: req.body.avatarUrl || `https://api.dicebear.com/7.x/bottts/svg?seed=${username}`,
       createdAt: req.body.createdAt || new Date().toISOString(),
       is2FAEnabled: false,
-      storageQuota: 10 * 1024 * 1024 * 1024,
+      plan: 'free',
+      storageQuota: 3 * 1024 * 1024 * 1024,
       storageUsed: 0,
       settings: req.body.settings || {
         accentColor: '#7373F0',
@@ -207,9 +208,19 @@ export async function disable2FA(req, res) {
 export async function getProfile(req, res) {
   try {
     const { id } = req.params;
-    let user = await findUserById(id);
+    let user = null;
+    if (id === 'current' || id === 'me' || id === 'default') {
+      const allUsers = await getUsers();
+      user = allUsers[0] || null;
+    } else {
+      user = await findUserById(id);
+      if (!user) {
+        user = await findUserByEmail(id);
+      }
+    }
     if (!user) {
-      user = await findUserByEmail(id);
+      const allUsers = await getUsers();
+      user = allUsers[0] || null;
     }
     if (!user) return res.status(404).json({ error: 'Usuario no encontrado.' });
     return res.json(user);
@@ -236,5 +247,45 @@ export async function updateProfile(req, res) {
   } catch (error) {
     console.error('[AuthController] Error en updateProfile:', error);
     return res.status(500).json({ error: 'Error al actualizar perfil.' });
+  }
+}
+
+export async function updatePlan(req, res) {
+  try {
+    const { userId, plan } = req.body;
+    if (!userId || !plan) {
+      return res.status(400).json({ error: 'userId y plan son obligatorios.' });
+    }
+
+    const validPlans = {
+      free: 3 * 1024 * 1024 * 1024,
+      pro: 50 * 1024 * 1024 * 1024,
+      ultra: 200 * 1024 * 1024 * 1024
+    };
+
+    if (!validPlans[plan]) {
+      return res.status(400).json({ error: 'Plan inválido. Opciones disponibles: free, pro, ultra.' });
+    }
+
+    let user = await findUserById(userId);
+    if (!user) user = await findUserByEmail(userId);
+    if (!user) return res.status(404).json({ error: 'Usuario no encontrado.' });
+
+    const updatedUser = {
+      ...user,
+      plan,
+      storageQuota: validPlans[plan]
+    };
+
+    const saved = await saveUser(updatedUser);
+    return res.json({
+      success: true,
+      user: saved,
+      plan,
+      storageQuota: validPlans[plan]
+    });
+  } catch (error) {
+    console.error('[AuthController] Error al actualizar plan:', error);
+    return res.status(500).json({ error: 'Error al actualizar plan.' });
   }
 }

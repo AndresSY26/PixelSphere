@@ -148,7 +148,17 @@ export const MediaCard = memo(({
                   />
                 )
               ) : (
-                <Image src={item.thumbnailUrl} alt="" fill sizes="40px" className={cn("object-cover", item.isAdultContent && "blur-md")} loading="lazy" />
+                <img 
+                  src={item.thumbnailUrl || item.url} 
+                  alt="" 
+                  className={cn("w-full h-full object-cover", item.isAdultContent && "blur-md")} 
+                  loading="lazy"
+                  onError={(e) => {
+                    if (item.url && e.currentTarget.src !== item.url) {
+                      e.currentTarget.src = item.url;
+                    }
+                  }}
+                />
               )
             )}
           </div>
@@ -208,13 +218,16 @@ export const MediaCard = memo(({
                 />
               )
             ) : (
-              <Image 
-                src={item.thumbnailUrl} 
+              <img 
+                src={item.thumbnailUrl || item.url} 
                 alt="" 
-                fill 
-                sizes="(max-width: 768px) 33vw, (max-width: 1200px) 20vw, 15vw"
-                className={cn("object-cover transition-transform duration-500 group-hover:scale-110", item.isAdultContent && "blur-2xl opacity-40 scale-125")} 
+                className={cn("w-full h-full object-cover transition-transform duration-500 group-hover:scale-110", item.isAdultContent && "blur-2xl opacity-40 scale-125")} 
                 loading="lazy"
+                onError={(e) => {
+                  if (item.url && e.currentTarget.src !== item.url) {
+                    e.currentTarget.src = item.url;
+                  }
+                }}
               />
             )
           )}

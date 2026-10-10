@@ -1,7 +1,8 @@
 import { 
   getAdminMetrics, 
   getAchievementsByUser, 
-  findUserById 
+  findUserById,
+  clearUserHistory 
 } from '../services/storageService.js';
 
 export async function getAdminStats(req, res) {
@@ -34,5 +35,16 @@ export async function getHistory(req, res) {
   } catch (error) {
     console.error('[StatsController] Error al obtener historial:', error);
     return res.status(500).json({ error: 'Error al obtener historial.' });
+  }
+}
+
+export async function clearHistory(req, res) {
+  try {
+    const { userId } = req.params;
+    await clearUserHistory(userId);
+    return res.json({ success: true });
+  } catch (error) {
+    console.error('[StatsController] Error al limpiar historial:', error);
+    return res.status(500).json({ error: 'Error al limpiar historial.' });
   }
 }

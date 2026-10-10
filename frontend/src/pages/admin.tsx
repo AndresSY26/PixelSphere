@@ -321,7 +321,7 @@ export default function AdminConsolePage() {
                           <TableCell>
                             <div className="space-y-1.5 w-24">
                               <p className="text-[10px] font-bold text-white">{formatBytes(u.storageUsed)}</p>
-                              <Progress value={Math.min((u.storageUsed / (26 * 1024 * 1024 * 1024)) * 100, 100)} className="h-1 bg-white/5" />
+                              <Progress value={Math.min((u.storageUsed / (u.storageQuota || (3 * 1024 * 1024 * 1024))) * 100, 100)} className="h-1 bg-white/5" />
                             </div>
                           </TableCell>
                           <TableCell className="pr-8 text-right">

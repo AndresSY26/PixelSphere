@@ -1,30 +1,61 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { 
   getMedia, 
   getMediaByUser, 
+  getDeletedMedia,
   findMediaById, 
   saveMediaMetadata, 
   updateMedia as updateMediaStorage, 
   deleteMedia as deleteMediaStorage,
   deleteMultipleMedia,
   restoreMultipleMedia,
+  emptyTrash,
+  cleanupExpiredTrash,
   recordMediaView,
   updateVideoProgress,
   findUserById,
-  unlockAchievement
+  unlockAchievement,
+  checkUserStorageQuota,
+  findMediaByHash
 } from '../services/storageService.js';
 import { UPLOADS_DIR } from '../config/constants.js';
 import { autoTagImage } from '../services/geminiService.js';
+import { 
+  optimizeImageToWebP, 
+  optimizeVideoToWebM, 
+  encryptZeroKnowledge, 
+  decryptZeroKnowledge, 
+  encryptFileZeroKnowledge,
+  decryptFileZeroKnowledge,
+  isZeroKnowledgeEncrypted 
+} from '../services/mediaOptimizationService.js';
+import { 
+  uploadToCloudStorage, 
+  downloadFromCloudStorage,
+  downloadFromCloudStorageToFile,
+  deleteFromCloudStorage 
+} from '../services/cloudStorageService.js';
 
 export async function listMedia(req, res) {
   try {
     const { userId, type, isDeleted, isPrivate, albumId, query, all } = req.query;
-    // Mostrar todo el contenido multimedia guardado en el nodo para que sea visible con o sin Google login
-    let items = await getMedia();
+    
+    let items;
+    const filterUserId = (all === 'true' || userId === 'all' || !userId) ? null : userId;
 
-    if (userId && all === 'false') {
-      items = items.filter(m => m.userId === userId);
+    if (isDeleted === 'true') {
+      // Activar comprobación de purga automática de papelera para elementos mayores a 30 días
+      cleanupExpiredTrash(30).catch(() => {});
+      items = await getDeletedMedia(filterUserId);
+    } else {
+      // Mostrar contenido multimedia activo guardado en el nodo
+      items = await getMedia({ isDeleted: false, userId: filterUserId });
+    }
+
+    if (filterUserId && isDeleted !== 'true') {
+      items = items.filter(m => m.userId === filterUserId);
     }
 
     if (isDeleted !== undefined) {
@@ -85,30 +116,148 @@ export async function uploadMedia(req, res) {
     const { userId, title, isPrivate, latitude, longitude, albumId } = req.body;
     const file = req.file;
     const isVideo = file.mimetype.startsWith('video/');
-    const type = isVideo ? 'video' : 'image';
+    const detectedType = isVideo ? 'video' : 'image';
     const cleanUserId = userId || 'anonymous';
-
-    const relativeUrl = `/uploads/${cleanUserId}/${type}/${file.filename}`;
     const mediaId = Math.random().toString(36).substring(2, 11);
+
+    // 1. Verificación estricta de Cuota de Almacenamiento (Planes Free 2GB / Pro 50GB / Ultra 200GB)
+    const quotaCheck = await checkUserStorageQuota(cleanUserId, file.size);
+    if (!quotaCheck.allowed) {
+      if (file.path && fs.existsSync(file.path)) {
+        await fs.promises.unlink(file.path).catch(() => {});
+      }
+      return res.status(403).json({
+        error: `Has superado tu cuota de almacenamiento de ${Math.round(quotaCheck.quota / (1024 * 1024 * 1024))} GB. Mejora tu plan para continuar subiendo archivos.`,
+        code: 'STORAGE_QUOTA_EXCEEDED',
+        quota: quotaCheck.quota,
+        used: quotaCheck.used,
+        plan: quotaCheck.plan
+      });
+    }
+
+    // 2. Deduplicación inteligente por SHA-256 (Cero almacenamiento duplicado)
+    let incomingFileBuf = file.buffer;
+    if (!incomingFileBuf && file.path && fs.existsSync(file.path)) {
+      incomingFileBuf = await fs.promises.readFile(file.path).catch(() => null);
+    }
+    const fileHash = incomingFileBuf ? crypto.createHash('sha256').update(incomingFileBuf).digest('hex') : null;
+
+    if (fileHash) {
+      const existingMedia = await findMediaByHash(cleanUserId, fileHash);
+      if (existingMedia) {
+        console.log(`[UploadMedia] Deduplicación exitosa: archivo ya existe como ${existingMedia.filename} (Hash: ${fileHash})`);
+        if (file.path && fs.existsSync(file.path)) {
+          await fs.promises.unlink(file.path).catch(() => {});
+        }
+        return res.status(200).json(existingMedia);
+      }
+    }
+
+    const userUploadPath = path.join(UPLOADS_DIR, cleanUserId, detectedType);
+    await fs.promises.mkdir(userUploadPath, { recursive: true });
+
+    const thumbDir = path.join(UPLOADS_DIR, cleanUserId, 'thumbnails');
+    await fs.promises.mkdir(thumbDir, { recursive: true });
+    const thumbName = `thumb_${mediaId}.webp`;
+    const thumbDiskPath = path.join(thumbDir, thumbName);
+
+    const baseName = path.parse(file.originalname).name.replace(/[^a-zA-Z0-9._-]/g, '_').toLowerCase();
+    let finalFilename = '';
+    let publicPath = '';
+    let finalThumbnailUrl = `/uploads/${cleanUserId}/thumbnails/${thumbName}`;
+    let finalSize = file.size;
+    let cleanMime = isVideo ? 'video/webm' : 'image/webp';
+    let width = 1920;
+    let height = 1080;
+
+    let cloudStoragePath = '';
+    let cloudUrl = '';
+
+    if (!isVideo) {
+      finalFilename = `${mediaId}_${baseName}.webp`;
+      const finalDiskPath = path.join(userUploadPath, finalFilename);
+
+      const opt = await optimizeImageToWebP(file.path || file.buffer, thumbDiskPath);
+      width = opt.width;
+      height = opt.height;
+      finalSize = opt.size;
+
+      // Cifrado Zero-Knowledge (AES-256-GCM)
+      const encrypted = encryptZeroKnowledge(opt.buffer);
+
+      // Respaldo en Firebase Storage (en la nube)
+      cloudStoragePath = `media/${cleanUserId}/image/${finalFilename}.enc`;
+      try {
+        const cloudRes = await uploadToCloudStorage(cloudStoragePath, encrypted);
+        cloudUrl = cloudRes.downloadUrl;
+      } catch (err) {
+        console.warn('[UploadMedia] Error subiendo a Firebase Storage:', err.message);
+      }
+
+      if (opt.thumbnailBuffer) {
+        const encThumb = encryptZeroKnowledge(opt.thumbnailBuffer);
+        uploadToCloudStorage(`thumbnails/${cleanUserId}/${thumbName}.enc`, encThumb).catch(() => {});
+      }
+
+      publicPath = `/uploads/${cleanUserId}/image/${finalFilename}`;
+
+      // Limpieza inmediata de archivos de procesamiento temporal en el servidor
+      if (file.path) await fs.promises.unlink(file.path).catch(() => {});
+      await fs.promises.unlink(finalDiskPath).catch(() => {});
+      await fs.promises.unlink(thumbDiskPath).catch(() => {});
+    } else {
+      finalFilename = `${mediaId}_${baseName}.webm`;
+      const finalDiskPath = path.join(userUploadPath, finalFilename);
+
+      const opt = await optimizeVideoToWebM(file.path, finalDiskPath, thumbDiskPath);
+      finalSize = opt.size;
+
+      const encVideoPath = `${finalDiskPath}.enc`;
+      cloudStoragePath = `media/${cleanUserId}/video/${finalFilename}.enc`;
+      try {
+        await encryptFileZeroKnowledge(finalDiskPath, encVideoPath);
+        const cloudRes = await uploadToCloudStorage(cloudStoragePath, encVideoPath);
+        cloudUrl = cloudRes.downloadUrl;
+      } catch (err) {
+        console.warn('[UploadMedia] Error subiendo video a Firebase Storage:', err.message);
+      }
+
+      if (fs.existsSync(thumbDiskPath)) {
+        const thumbBuf = await fs.promises.readFile(thumbDiskPath);
+        const encThumb = encryptZeroKnowledge(thumbBuf);
+        uploadToCloudStorage(`thumbnails/${cleanUserId}/${thumbName}.enc`, encThumb).catch(() => {});
+      }
+
+      publicPath = `/uploads/${cleanUserId}/video/${finalFilename}`;
+
+      // Limpieza inmediata de archivos temporales en el servidor
+      if (file.path) await fs.promises.unlink(file.path).catch(() => {});
+      await fs.promises.unlink(finalDiskPath).catch(() => {});
+      await fs.promises.unlink(encVideoPath).catch(() => {});
+      await fs.promises.unlink(thumbDiskPath).catch(() => {});
+    }
 
     const newMedia = {
       id: mediaId,
       userId: cleanUserId,
-      type,
-      url: relativeUrl,
-      path: relativeUrl,
-      thumbnailUrl: relativeUrl,
-      filename: file.originalname,
+      type: detectedType,
+      url: publicPath,
+      path: publicPath,
+      thumbnailUrl: finalThumbnailUrl,
+      cloudStoragePath,
+      cloudUrl,
+      filename: `${baseName}.${isVideo ? 'webm' : 'webp'}`,
       title: title || file.originalname,
-      size: file.size,
-      mimeType: file.mimetype,
-      tags: [type, 'upload'],
+      size: finalSize,
+      fileHash: fileHash || undefined,
+      mimeType: cleanMime,
+      tags: [detectedType, 'upload', isVideo ? 'webm' : 'webp'],
       isPrivate: isPrivate === 'true' || isPrivate === true,
       albumId: albumId || null,
       createdAt: new Date().toISOString(),
       metadata: {
-        width: 1920,
-        height: 1080,
+        width,
+        height,
         latitude: latitude ? parseFloat(latitude) : undefined,
         longitude: longitude ? parseFloat(longitude) : undefined
       }
@@ -117,18 +266,18 @@ export async function uploadMedia(req, res) {
     // Auto-etiquetado inteligente con Gemini si es imagen
     if (!isVideo) {
       try {
-        const filePath = file.path;
-        const fileBuffer = fs.readFileSync(filePath);
-        const dataUri = `data:${file.mimetype};base64,${fileBuffer.toString('base64')}`;
-        const aiResult = await autoTagImage(dataUri);
-        if (aiResult.tags && aiResult.tags.length > 0) {
+        const fileBuffer = await fs.promises.readFile(path.join(userUploadPath, finalFilename));
+        const decryptedForAi = decryptZeroKnowledge(fileBuffer);
+        const dataUri = `data:image/webp;base64,${decryptedForAi.toString('base64')}`;
+        const aiResult = await autoTagImage(dataUri, [], '', file.originalname || finalFilename);
+        if (aiResult?.tags?.length) {
           newMedia.tags = Array.from(new Set([...newMedia.tags, ...aiResult.tags]));
         }
-        if (aiResult.description) {
+        if (aiResult?.description) {
           newMedia.description = aiResult.description;
         }
       } catch (aiErr) {
-        console.warn('[MediaController] Auto-etiquetado omitido o fallido:', aiErr.message);
+        console.warn('[MediaController] Auto-etiquetado omitido:', aiErr.message);
       }
     }
 
@@ -173,6 +322,18 @@ export async function handleChunkedUpload(req, res) {
     const totalChunks = parseInt(rawTotalChunks ?? '1', 10);
     const isAdultContent = isAdult === 'true' || isAdult === true;
     const totalSize = parseInt(filesize ?? '0', 10) || chunkFile.size;
+
+    // 1. Verificación de cuota de almacenamiento en subida por fragmentos
+    const quotaCheck = await checkUserStorageQuota(userId, totalSize);
+    if (!quotaCheck.allowed) {
+      return res.status(403).json({
+        error: `Has superado tu cuota de almacenamiento de ${Math.round(quotaCheck.quota / (1024 * 1024 * 1024))} GB. Mejora tu plan para continuar subiendo archivos.`,
+        code: 'STORAGE_QUOTA_EXCEEDED',
+        quota: quotaCheck.quota,
+        used: quotaCheck.used,
+        plan: quotaCheck.plan
+      });
+    }
 
     const isVideoExt = /\.(mp4|mov|webm|mkv|avi|m4v|3gp|flv|wmv)$/i.test(filename);
     const isVideoMime = (contentType || chunkFile.mimetype || '').startsWith('video/');
@@ -235,37 +396,117 @@ export async function handleChunkedUpload(req, res) {
       }
     }
 
-    const thumbName = `thumb_${fileId}.jpg`;
-    const thumbDiskPath = path.join(UPLOADS_DIR, userId, 'thumbnails', thumbName);
-    let finalThumbnailUrl = fs.existsSync(thumbDiskPath) 
-      ? `/uploads/${userId}/thumbnails/${thumbName}` 
-      : (detectedType === 'video' ? `${publicPath}#t=0.5` : publicPath);
+    // Deduplicación inteligente por hash SHA-256
+    let chunkedFileHash = null;
+    try {
+      const assembledBuffer = await fs.promises.readFile(filePath);
+      chunkedFileHash = crypto.createHash('sha256').update(assembledBuffer).digest('hex');
+      const existingMedia = await findMediaByHash(userId, chunkedFileHash);
+      if (existingMedia) {
+        console.log(`[ChunkUpload] Deduplicación exitosa: archivo ya existe como ${existingMedia.filename} (Hash: ${chunkedFileHash})`);
+        await fs.promises.unlink(filePath).catch(() => {});
+        return res.status(200).json(existingMedia);
+      }
+    } catch (hashErr) {}
 
-    let cleanMime = contentType || chunkFile.mimetype;
-    if (!cleanMime || cleanMime === 'application/octet-stream') {
-      if (/\.mp4$/i.test(filename)) cleanMime = 'video/mp4';
-      else if (/\.webm$/i.test(filename)) cleanMime = 'video/webm';
-      else if (/\.mov$/i.test(filename)) cleanMime = 'video/quicktime';
-      else if (/\.mkv$/i.test(filename)) cleanMime = 'video/x-matroska';
-      else if (/\.jpg|\.jpeg$/i.test(filename)) cleanMime = 'image/jpeg';
-      else if (/\.png$/i.test(filename)) cleanMime = 'image/png';
-      else cleanMime = detectedType === 'video' ? 'video/mp4' : 'image/jpeg';
+    // OPTIMIZACIÓN WEBP / WEBM + CIFRADO ZERO-KNOWLEDGE (AES-256-GCM)
+    const baseSafeName = path.parse(safeName).name;
+    const thumbName = `thumb_${fileId}.webp`;
+    const thumbDir = path.join(UPLOADS_DIR, userId, 'thumbnails');
+    await fs.promises.mkdir(thumbDir, { recursive: true });
+    const thumbDiskPath = path.join(thumbDir, thumbName);
+
+    let finalOptimizedPath = publicPath;
+    let finalOptimizedFilename = `${baseSafeName}.${detectedType === 'video' ? 'webm' : 'webp'}`;
+    let finalSize = totalSize;
+    let cleanMime = detectedType === 'video' ? 'video/webm' : 'image/webp';
+    let width = 1920;
+    let height = 1080;
+    let cloudStoragePath = '';
+    let cloudUrl = '';
+
+    if (detectedType === 'image') {
+      const finalWebpName = `${fileId}_${baseSafeName}.webp`;
+      const finalWebpPath = path.join(userUploadPath, finalWebpName);
+
+      const opt = await optimizeImageToWebP(filePath, thumbDiskPath);
+      width = opt.width;
+      height = opt.height;
+      finalSize = opt.size;
+
+      const encrypted = encryptZeroKnowledge(opt.buffer);
+
+      // Respaldo en Firebase Storage
+      cloudStoragePath = `media/${userId}/image/${finalWebpName}.enc`;
+      try {
+        const cloudRes = await uploadToCloudStorage(cloudStoragePath, encrypted);
+        cloudUrl = cloudRes.downloadUrl;
+      } catch (err) {
+        console.warn('[ChunkedUpload] Error subiendo imagen a Firebase Storage:', err.message);
+      }
+
+      if (opt.thumbnailBuffer) {
+        const encThumb = encryptZeroKnowledge(opt.thumbnailBuffer);
+        uploadToCloudStorage(`thumbnails/${userId}/${thumbName}.enc`, encThumb).catch(() => {});
+      }
+
+      // Limpieza inmediata de disco en el servidor
+      await fs.promises.unlink(filePath).catch(() => {});
+      await fs.promises.unlink(finalWebpPath).catch(() => {});
+      await fs.promises.unlink(thumbDiskPath).catch(() => {});
+
+      finalOptimizedPath = `/uploads/${userId}/image/${finalWebpName}`;
+    } else {
+      const finalWebmName = `${fileId}_${baseSafeName}.webm`;
+      const finalWebmPath = path.join(userUploadPath, finalWebmName);
+
+      const opt = await optimizeVideoToWebM(filePath, finalWebmPath, thumbDiskPath);
+      finalSize = opt.size;
+
+      const encWebmPath = `${finalWebmPath}.enc`;
+      cloudStoragePath = `media/${userId}/video/${finalWebmName}.enc`;
+      try {
+        await encryptFileZeroKnowledge(finalWebmPath, encWebmPath);
+        const cloudRes = await uploadToCloudStorage(cloudStoragePath, encWebmPath);
+        cloudUrl = cloudRes.downloadUrl;
+      } catch (err) {
+        console.warn('[ChunkedUpload] Error subiendo video a Firebase Storage:', err.message);
+      }
+
+      if (fs.existsSync(thumbDiskPath)) {
+        const thumbBuf = await fs.promises.readFile(thumbDiskPath);
+        const encThumb = encryptZeroKnowledge(thumbBuf);
+        uploadToCloudStorage(`thumbnails/${userId}/${thumbName}.enc`, encThumb).catch(() => {});
+      }
+
+      // Limpieza inmediata de disco en el servidor
+      await fs.promises.unlink(filePath).catch(() => {});
+      await fs.promises.unlink(finalWebmPath).catch(() => {});
+      await fs.promises.unlink(encWebmPath).catch(() => {});
+      await fs.promises.unlink(thumbDiskPath).catch(() => {});
+
+      finalOptimizedPath = `/uploads/${userId}/video/${finalWebmName}`;
     }
+
+    const finalThumbnailUrl = `/uploads/${userId}/thumbnails/${thumbName}`;
 
     const newEntry = {
       id: fileId,
       userId,
       type: detectedType,
-      url: publicPath,
-      path: publicPath,
+      url: finalOptimizedPath,
+      path: finalOptimizedPath,
       thumbnailUrl: finalThumbnailUrl,
-      filename,
+      cloudStoragePath,
+      cloudUrl,
+      filename: finalOptimizedFilename,
       title: filename,
-      size: totalSize,
-      width: 1920,
-      height: 1080,
+      size: finalSize,
+      fileHash: chunkedFileHash || undefined,
+      width,
+      height,
       mimeType: cleanMime,
-      tags: [detectedType, 'upload'],
+      tags: [detectedType, 'upload', detectedType === 'video' ? 'webm' : 'webp'],
       isPrivate: false,
       isAdultContent,
       latitude: lat ? parseFloat(lat) : undefined,
@@ -277,9 +518,10 @@ export async function handleChunkedUpload(req, res) {
     // Auto-etiquetado con Gemini solo para imágenes
     if (detectedType === 'image') {
       try {
-        const fileBuffer = await fs.promises.readFile(filePath);
-        const dataUri = `data:${newEntry.mimeType};base64,${fileBuffer.toString('base64')}`;
-        const aiResult = await autoTagImage(dataUri);
+        const encBuffer = await fs.promises.readFile(path.join(userUploadPath, `${fileId}_${baseSafeName}.webp`));
+        const decryptedForAi = decryptZeroKnowledge(encBuffer);
+        const dataUri = `data:image/webp;base64,${decryptedForAi.toString('base64')}`;
+        const aiResult = await autoTagImage(dataUri, [], '', filename || baseSafeName);
         if (aiResult?.tags?.length) {
           newEntry.tags = Array.from(new Set([...newEntry.tags, ...aiResult.tags]));
         }
@@ -300,70 +542,88 @@ export async function handleChunkedUpload(req, res) {
   }
 }
 
+const videoDecryptions = new Map();
+
 /**
  * STREAMING HTTP 206 (Range headers) PARA REPRODUCCIÓN FLUIDA DE VIDEO
  */
 export async function streamVideo(req, res) {
   try {
     const { id } = req.params;
-    const media = await findMediaById(id);
+    let media = await findMediaById(id);
+
+    if (!media) {
+      try {
+        const { query } = await import('../db/index.js');
+        const dbRes = await query('SELECT * FROM media WHERE id = $1 OR url LIKE $2 LIMIT 1', [id, `%${id}%`]);
+        if (dbRes?.rows?.[0]) {
+          const { mapMediaFromDb } = await import('../services/storageService.js');
+          media = mapMediaFromDb(dbRes.rows[0]);
+        }
+      } catch (e) {}
+    }
+
     if (!media) return res.status(404).send('Video no encontrado');
 
-    // Resolver ruta física en disco
-    const relativePart = media.url.replace(/^\/uploads\//, '');
-    const videoPath = path.join(UPLOADS_DIR, relativePart);
+    let cloudBuf = null;
+    const cloudPath = media.cloudStoragePath || `media/${media.userId}/video/${path.basename(media.url || '')}.enc`;
+    try {
+      cloudBuf = await downloadFromCloudStorage(cloudPath);
+    } catch (e) {}
 
-    if (!fs.existsSync(videoPath)) {
-      return res.status(404).send('Archivo físico de video no encontrado en disco.');
+    if (!cloudBuf || cloudBuf.length === 0) {
+      return res.status(404).send('Archivo físico de video no encontrado en Firebase Storage.');
     }
 
-    const stat = fs.statSync(videoPath);
-    const fileSize = stat.size;
-    const range = req.headers.range;
+    // Comprobar si está cifrado con Zero-Knowledge (cabecera 'PXZK')
+    const isEncrypted = cloudBuf.length >= 4 && cloudBuf.subarray(0, 4).toString('utf-8') === 'PXZK';
+    const videoBuffer = isEncrypted ? decryptZeroKnowledge(cloudBuf) : cloudBuf;
+    const fileSize = videoBuffer.length;
 
-    let mime = media.mimeType || 'video/mp4';
-    if (!mime || mime === 'application/octet-stream') {
-      if (videoPath.endsWith('.webm')) mime = 'video/webm';
-      else if (videoPath.endsWith('.mov')) mime = 'video/quicktime';
-      else if (videoPath.endsWith('.mkv')) mime = 'video/x-matroska';
-      else mime = 'video/mp4';
-    }
+    let mime = 'video/webm';
+    if ((media.url || '').endsWith('.mp4')) mime = 'video/mp4';
+    else if ((media.url || '').endsWith('.mov')) mime = 'video/quicktime';
+    else if ((media.url || '').endsWith('.mkv')) mime = 'video/x-matroska';
 
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Cache-Control', 'public, max-age=86400');
 
+    if (req.method === 'HEAD') {
+      res.writeHead(200, {
+        'Content-Length': fileSize,
+        'Content-Type': mime,
+        'Accept-Ranges': 'bytes'
+      });
+      return res.end();
+    }
+
+    const range = req.headers.range;
     if (range) {
       const parts = range.replace(/bytes=/, '').split('-');
       const start = parseInt(parts[0], 10);
       const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
 
       if (start >= fileSize || end >= fileSize) {
-        res.writeHead(416, {
-          'Content-Range': `bytes */${fileSize}`,
-        });
+        res.writeHead(416, { 'Content-Range': `bytes */${fileSize}` });
         return res.end();
       }
 
       const chunkSize = (end - start) + 1;
-      const fileStream = fs.createReadStream(videoPath, { start, end });
-
-      const head = {
+      res.writeHead(206, {
         'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-        'Accept-Ranges': 'bytes',
         'Content-Length': chunkSize,
         'Content-Type': mime,
-      };
-
-      res.writeHead(206, head);
-      fileStream.pipe(res);
+      });
+      return res.end(videoBuffer.subarray(start, end + 1));
     } else {
-      const head = {
+      res.writeHead(200, {
         'Content-Length': fileSize,
         'Content-Type': mime,
-        'Accept-Ranges': 'bytes',
-      };
-      res.writeHead(200, head);
-      fs.createReadStream(videoPath).pipe(res);
+      });
+      return res.end(videoBuffer);
     }
   } catch (error) {
     console.error('[MediaController] Error en streaming de video:', error);
@@ -387,10 +647,11 @@ export async function updateMedia(req, res) {
 export async function deleteMedia(req, res) {
   try {
     const { id } = req.params;
-    const { userId } = req.body;
-    const ok = await deleteMediaStorage(id, userId);
+    const userId = req.body?.userId || req.query?.userId || req.headers['x-user-id'];
+    const permanent = req.body?.permanent === true || req.query?.permanent === 'true';
+    const ok = await deleteMediaStorage(id, userId, permanent);
     if (!ok) return res.status(404).json({ error: 'Medio no encontrado.' });
-    return res.json({ success: true });
+    return res.json({ success: true, permanent });
   } catch (error) {
     console.error('[MediaController] Error al eliminar medio:', error);
     return res.status(500).json({ error: 'Error al eliminar medio.' });
@@ -399,12 +660,35 @@ export async function deleteMedia(req, res) {
 
 export async function deleteMultiple(req, res) {
   try {
-    const { ids, userId } = req.body;
-    const ok = await deleteMultipleMedia(ids, userId);
-    return res.json({ success: ok });
+    const { ids, userId, permanent } = req.body;
+    const isPermanent = permanent === true || req.query?.permanent === 'true';
+    const ok = await deleteMultipleMedia(ids, userId, isPermanent);
+    return res.json({ success: ok, permanent: isPermanent });
   } catch (error) {
     console.error('[MediaController] Error en eliminación múltiple:', error);
     return res.status(500).json({ error: 'Error en eliminación múltiple.' });
+  }
+}
+
+export async function emptyTrashController(req, res) {
+  try {
+    const userId = req.body?.userId || req.query?.userId || req.headers['x-user-id'];
+    const ok = await emptyTrash(userId);
+    return res.json({ success: ok });
+  } catch (error) {
+    console.error('[MediaController] Error al vaciar papelera:', error);
+    return res.status(500).json({ error: 'Error al vaciar papelera.' });
+  }
+}
+
+export async function cleanupTrashController(req, res) {
+  try {
+    const days = parseInt(req.query?.days || req.body?.days || '30', 10);
+    const result = await cleanupExpiredTrash(days);
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    console.error('[MediaController] Error en purga de papelera:', error);
+    return res.status(500).json({ error: 'Error en purga de papelera.' });
   }
 }
 
@@ -422,8 +706,31 @@ export async function restoreMultiple(req, res) {
 export async function recordView(req, res) {
   try {
     const { id } = req.params;
-    const { userId } = req.body;
-    if (userId) await recordMediaView(userId, id);
+    const { userId, source, device, ip } = req.body;
+    const userAgent = req.headers['user-agent'] || '';
+    const rawIp = ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
+    const clientIp = typeof rawIp === 'string' ? rawIp.split(',')[0].trim() : '127.0.0.1';
+
+    let deviceName = device;
+    if (!deviceName) {
+      if (/mobile|android|iphone|ipod/i.test(userAgent)) {
+        deviceName = 'Dispositivo Móvil';
+      } else if (/ipad|tablet/i.test(userAgent)) {
+        deviceName = 'Tablet';
+      } else {
+        deviceName = 'Escritorio (PC/Laptop)';
+      }
+    }
+
+    if (userId) {
+      const cleanIp = clientIp === '::1' || clientIp === '::ffff:127.0.0.1' ? '127.0.0.1 (Local)' : clientIp;
+      const updatedUser = await recordMediaView(userId, id, {
+        source: source || 'Galería Principal',
+        deviceName,
+        clientIp: cleanIp
+      });
+      return res.json({ success: true, history: updatedUser?.viewHistory || [] });
+    }
     return res.json({ success: true });
   } catch (error) {
     console.error('[MediaController] Error al registrar visualización:', error);

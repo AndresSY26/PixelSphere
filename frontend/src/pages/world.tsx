@@ -183,7 +183,7 @@ export default function WorldPage() {
                     <X className="h-6 w-6" />
                   </Button>
                   {selectedMedia.type === 'video' ? (
-                    <NeuralVideoPlayer src={selectedMedia.url} className="w-full h-full" />
+                    <NeuralVideoPlayer key={selectedMedia.id} src={selectedMedia.url} mediaId={selectedMedia.id} className="w-full h-full" />
                   ) : (
                     <img src={selectedMedia.url} className="w-full h-full object-contain" alt="" />
                   )}

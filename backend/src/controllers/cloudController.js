@@ -1,11 +1,15 @@
 import fs from 'node:fs/promises';
 import nodeFs from 'node:fs';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
+import sharp from 'sharp';
 import { saveMediaMetadata } from '../services/storageService.js';
 import { broadcastNeuralEvent } from '../services/eventService.js';
 import { UPLOADS_DIR } from '../config/constants.js';
+import { uploadToCloudStorage } from '../services/cloudStorageService.js';
+import { optimizeVideoToWebM, encryptFileZeroKnowledge, encryptZeroKnowledge } from '../services/mediaOptimizationService.js';
 
 /**
  * Obtiene el stream de descarga de Google Drive gestionando redirecciones HTTP 302/303,
@@ -17,34 +21,58 @@ async function fetchDriveMediaStream(fileId, token, isExport = false) {
     driveUrl = `https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=application/pdf`;
   }
 
-  // Interceptar redirección para preservar cabecera Authorization en saltos de dominio
-  let driveRes = await fetch(driveUrl, {
-    headers: {
-      Authorization: `Bearer ${token}`
-    },
-    redirect: 'manual'
-  });
+  let driveRes = null;
 
-  // Seguir redirección 301, 302, 303, 307, 308 conservando el token
-  if ([301, 302, 303, 307, 308].includes(driveRes.status)) {
-    const redirectUrl = driveRes.headers.get('location');
-    if (redirectUrl) {
-      driveRes = await fetch(redirectUrl, {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      // Interceptar redirección para preservar cabecera Authorization en saltos de dominio
+      driveRes = await fetch(driveUrl, {
         headers: {
           Authorization: `Bearer ${token}`
-        }
+        },
+        redirect: 'manual'
       });
-    }
-  }
 
-  // Si devuelve 403 y no era export, puede ser un documento de Google Workspace que requiere files.export
-  if (!driveRes.ok && driveRes.status === 403 && !isExport) {
-    const exportUrl = `https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=application/pdf`;
-    const exportRes = await fetch(exportUrl, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
-    if (exportRes.ok) {
-      driveRes = exportRes;
+      // Seguir redirección 301, 302, 303, 307, 308 conservando el token
+      if ([301, 302, 303, 307, 308].includes(driveRes.status)) {
+        const redirectUrl = driveRes.headers.get('location');
+        if (redirectUrl) {
+          driveRes = await fetch(redirectUrl, {
+            headers: {
+              Authorization: `Bearer ${token}`
+            }
+          });
+        }
+      }
+
+      // Si devuelve 403 y no era export, puede ser un documento de Google Workspace que requiere files.export
+      if (!driveRes.ok && driveRes.status === 403 && !isExport) {
+        const exportUrl = `https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=application/pdf`;
+        const exportRes = await fetch(exportUrl, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (exportRes.ok) {
+          return exportRes;
+        }
+      }
+
+      if (driveRes.ok) {
+        return driveRes;
+      }
+
+      // Reintentar si Google responde con 503 o 429
+      if ([503, 502, 504, 429].includes(driveRes.status) && attempt < 2) {
+        await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+        continue;
+      }
+
+      return driveRes;
+    } catch (err) {
+      if (attempt < 2) {
+        await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+      } else {
+        throw err;
+      }
     }
   }
 
@@ -68,15 +96,20 @@ export async function importFromCloud(req, res) {
     const fileId = Math.random().toString(36).substring(2, 11);
     const type = mimeType && mimeType.startsWith('video/') ? 'video' : 'image';
 
-    const userPath = path.join(UPLOADS_DIR, userId, type);
-    await fs.mkdir(userPath, { recursive: true });
-
     const cleanFilename = (filename || 'imported_file').replace(/[^a-z0-9.]/gi, '_').toLowerCase();
     const diskName = `${fileId}_cloud_${cleanFilename}`;
-    const filePath = path.join(userPath, diskName);
     const publicPath = `/uploads/${userId}/${type}/${diskName}`;
 
-    await fs.writeFile(filePath, buffer);
+    // Cifrar con Zero-Knowledge y subir directamente a Firebase Storage
+    const encrypted = encryptZeroKnowledge(buffer);
+    const cloudStoragePath = `media/${userId}/${type}/${diskName}.enc`;
+    let cloudUrl = null;
+    try {
+      const uploadRes = await uploadToCloudStorage(cloudStoragePath, encrypted);
+      cloudUrl = uploadRes.downloadUrl;
+    } catch (e) {
+      console.warn('[CloudImport] Error subiendo a Firebase Storage:', e.message);
+    }
 
     const newMedia = {
       id: fileId,
@@ -85,6 +118,8 @@ export async function importFromCloud(req, res) {
       url: publicPath,
       path: publicPath,
       thumbnailUrl: publicPath,
+      cloudStoragePath,
+      cloudUrl,
       filename: `Cloud_${filename || 'file'}`,
       size: buffer.length,
       mimeType: mimeType || 'image/jpeg',
@@ -145,31 +180,111 @@ export async function importDriveBatch(req, res) {
         await fs.mkdir(userPath, { recursive: true });
 
         const cleanFilename = filename.replace(/[^a-z0-9._-]/gi, '_').toLowerCase();
-        const diskName = `${fileId}_drive_${cleanFilename}`;
-        const filePath = path.join(userPath, diskName);
-        const publicPath = `/uploads/${userId}/${type}/${diskName}`;
+        const baseClean = cleanFilename.replace(/\.[^/.]+$/, '');
+        let diskName = `${fileId}_drive_${baseClean}.${isVideo ? 'webm' : 'webp'}`;
+        let filePath = path.join(userPath, diskName);
+        let publicPath = `/uploads/${userId}/${type}/${diskName}`;
 
-        // Transmisión directa por tubería de streams a disco (cero impacto en memoria RAM)
-        const fileStream = nodeFs.createWriteStream(filePath);
-        await pipeline(Readable.fromWeb(driveRes.body), fileStream);
+        let cloudStoragePath = null;
+        let cloudUrl = null;
+        let finalThumbnailUrl = publicPath;
+        let width = null;
+        let height = null;
+        let duration = null;
+        let finalSize = 0;
+        let finalMime = isVideo ? 'video/webm' : 'image/webp';
 
-        const stats = await fs.stat(filePath);
+        const thumbDir = path.join(UPLOADS_DIR, userId, 'thumbnails');
+        await fs.mkdir(thumbDir, { recursive: true });
+        const thumbName = `thumb_${fileId}.webp`;
+        const thumbDiskPath = path.join(thumbDir, thumbName);
 
-        // Deducción segura de MIME
-        let finalMime = item.mimeType;
-        if (!finalMime || finalMime === 'application/octet-stream' || isGoogleDoc) {
-          if (isGoogleDoc) finalMime = 'application/pdf';
-          else if (/\.mp4$/i.test(filename)) finalMime = 'video/mp4';
-          else if (/\.webm$/i.test(filename)) finalMime = 'video/webm';
-          else if (/\.mov$/i.test(filename)) finalMime = 'video/quicktime';
-          else if (/\.mkv$/i.test(filename)) finalMime = 'video/x-matroska';
-          else if (/\.jpg|\.jpeg$/i.test(filename)) finalMime = 'image/jpeg';
-          else if (/\.png$/i.test(filename)) finalMime = 'image/png';
-          else finalMime = isVideo ? 'video/mp4' : 'image/jpeg';
+        if (isVideo) {
+          // 1. Descargar a archivo temporal bruto
+          const rawTempPath = path.join(userPath, `temp_${fileId}_raw.mp4`);
+          const fileStream = nodeFs.createWriteStream(rawTempPath);
+          await pipeline(Readable.fromWeb(driveRes.body), fileStream);
+
+          // 2. Transcodificar a WebM ultrarrápido con deducción sustancial de peso (40%-65%) y generar miniatura WebP
+          console.log(`[DriveBatch] Transcodificando ${filename} a WebM con alta compresión...`);
+          const opt = await optimizeVideoToWebM(rawTempPath, filePath, thumbDiskPath);
+          await fs.unlink(rawTempPath).catch(() => {});
+          finalSize = opt.size;
+          width = opt.width;
+          height = opt.height;
+          duration = opt.duration;
+          console.log(`[DriveBatch] Video transcodificado a WebM con éxito: ${opt.size} bytes (${opt.width}x${opt.height})`);
+
+          finalThumbnailUrl = `/uploads/${userId}/thumbnails/${thumbName}`;
+          if (nodeFs.existsSync(thumbDiskPath)) {
+            const rawThumb = await fs.readFile(thumbDiskPath);
+            const encThumb = encryptZeroKnowledge(rawThumb);
+            await fs.writeFile(thumbDiskPath, encThumb);
+            uploadToCloudStorage(`thumbnails/${userId}/${thumbName}.enc`, encThumb).catch((e) => {
+              console.warn('[DriveBatch] Fallo subiendo miniatura a Firebase:', e.message);
+            });
+          }
+
+          // 3. Cifrar archivo WebM con Zero-Knowledge y subir a Firebase Storage
+          const encVideoPath = `${filePath}.enc`;
+          try {
+            console.log(`[DriveBatch] Cifrando WebM ${diskName} con AES-256-GCM Zero-Knowledge...`);
+            await encryptFileZeroKnowledge(filePath, encVideoPath);
+            cloudStoragePath = `media/${userId}/video/${diskName}.enc`;
+            console.log(`[DriveBatch] Subiendo WebM cifrado (${opt.size} bytes) a Firebase Storage...`);
+            const uploadRes = await uploadToCloudStorage(cloudStoragePath, encVideoPath);
+            cloudUrl = uploadRes.downloadUrl;
+            console.log(`[DriveBatch] WebM subido exitosamente a Firebase Storage! URL disponible.`);
+            // Limpieza inmediata de archivos temporales en el servidor
+            await fs.unlink(filePath).catch(() => {});
+            await fs.unlink(encVideoPath).catch(() => {});
+            await fs.unlink(thumbDiskPath).catch(() => {});
+          } catch (upErr) {
+            console.warn('[DriveBatch] Fallo al subir WebM a Firebase Storage:', upErr.message);
+            await fs.unlink(filePath).catch(() => {});
+            await fs.unlink(encVideoPath).catch(() => {});
+            await fs.unlink(thumbDiskPath).catch(() => {});
+          }
+        } else {
+          // Descargar imagen directamente a archivo temporal
+          const rawImgPath = path.join(userPath, `temp_${fileId}_raw`);
+          const fileStream = nodeFs.createWriteStream(rawImgPath);
+          await pipeline(Readable.fromWeb(driveRes.body), fileStream);
+
+          try {
+            const imgBuffer = await fs.readFile(rawImgPath);
+            const image = sharp(imgBuffer);
+            const meta = await image.metadata();
+            width = meta.width || null;
+            height = meta.height || null;
+
+            // Optimización a WebP de alta fidelidad
+            const webpBuffer = await sharp(imgBuffer).webp({ quality: 82 }).toBuffer();
+            finalSize = webpBuffer.length;
+            const encrypted = encryptZeroKnowledge(webpBuffer);
+
+            // Generar y subir miniatura WebP directamente
+            const thumbBuffer = await sharp(webpBuffer).resize({ width: 480, withoutEnlargement: true }).webp({ quality: 75 }).toBuffer();
+            const encThumb = encryptZeroKnowledge(thumbBuffer);
+            uploadToCloudStorage(`thumbnails/${userId}/${thumbName}.enc`, encThumb).catch(() => {});
+            finalThumbnailUrl = `/uploads/${userId}/thumbnails/${thumbName}`;
+
+            // Subir a Firebase Storage
+            cloudStoragePath = `media/${userId}/image/${diskName}.enc`;
+            const uploadRes = await uploadToCloudStorage(cloudStoragePath, encrypted);
+            cloudUrl = uploadRes.downloadUrl;
+
+            // Limpieza inmediata de archivos temporales
+            await fs.unlink(rawImgPath).catch(() => {});
+            await fs.unlink(filePath).catch(() => {});
+            await fs.unlink(thumbDiskPath).catch(() => {});
+          } catch (imgErr) {
+            console.warn('[DriveBatch] Fallo procesando imagen para Firebase Storage:', imgErr.message);
+            await fs.unlink(rawImgPath).catch(() => {});
+            await fs.unlink(filePath).catch(() => {});
+            await fs.unlink(thumbDiskPath).catch(() => {});
+          }
         }
-
-        const isAdultContent = item.isAdult === true || item.isAdult === 'true';
-        const isPrivate = item.isPrivate === true || item.isPrivate === 'true';
 
         const newMedia = {
           id: fileId,
@@ -177,17 +292,26 @@ export async function importDriveBatch(req, res) {
           type,
           url: publicPath,
           path: publicPath,
-          thumbnailUrl: publicPath,
-          filename: filename,
-          size: stats.size,
+          thumbnailUrl: finalThumbnailUrl,
+          cloudStoragePath,
+          cloudUrl,
+          filename: `${baseClean}.${isVideo ? 'webm' : 'webp'}`,
+          originalName: filename,
+          size: finalSize,
+          width,
+          height,
+          duration,
           mimeType: finalMime,
-          tags: ['google-drive', 'cloud-import'],
+          tags: ['google-drive', 'cloud-import', type, isVideo ? 'webm' : 'webp'],
           isPrivate,
           isAdultContent,
           createdAt: new Date().toISOString(),
           metadata: {
             cameraSource: 'Google Drive',
-            driveId: item.id
+            driveId: item.id,
+            width,
+            height,
+            duration
           }
         };
 
@@ -196,7 +320,7 @@ export async function importDriveBatch(req, res) {
 
         // Notificar en tiempo real por el canal SSE
         broadcastNeuralEvent('MEDIA', { action: 'CREATED', media: newMedia, userId });
-        console.log(`[DriveBatch] [${i + 1}/${items.length}] Ingestado exitosamente: ${filename} (${stats.size} bytes)`);
+        console.log(`[DriveBatch] [${i + 1}/${items.length}] Ingestado exitosamente: ${filename} -> ${newMedia.filename} (${finalSize} bytes)`);
       } catch (itemErr) {
         console.error(`[DriveBatch] Error ingestado ${filename}:`, itemErr);
         errors.push({ id: item.id, name: filename, error: itemErr.message });

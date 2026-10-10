@@ -275,7 +275,7 @@ export default function SharedExplorerPage() {
           <section className="relative rounded-[3rem] overflow-hidden bg-black/60 border border-white/5 shadow-2xl group">
             <div className="aspect-video w-full flex items-center justify-center bg-black">
               {(item as Media).type === 'video' ? (
-                <NeuralVideoPlayer src={(item as Media).url} className="w-full h-full" />
+                <NeuralVideoPlayer key={(item as Media).id} src={(item as Media).url} mediaId={(item as Media).id} className="w-full h-full" />
               ) : (
                 <img src={(item as Media).url} alt="" className="max-w-full max-h-full object-contain" />
               )}
@@ -300,7 +300,7 @@ export default function SharedExplorerPage() {
             <div className="flex flex-col h-full">
               <div className="flex-1 bg-black flex items-center justify-center overflow-hidden">
                 {selectedMedia.type === 'video' ? (
-                  <NeuralVideoPlayer src={selectedMedia.url} className="w-full h-full" />
+                  <NeuralVideoPlayer key={selectedMedia.id} src={selectedMedia.url} mediaId={selectedMedia.id} className="w-full h-full" />
                 ) : (
                   <img src={selectedMedia.url} className="max-w-full max-h-full object-contain" alt="" />
                 )}

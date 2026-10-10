@@ -268,7 +268,8 @@ function AuthContent() {
           is2FAEnabled: false,
           authProvider: 'google',
           isGoogleLinked: true,
-          storageQuota: 15 * 1024 * 1024 * 1024,
+          plan: 'free',
+          storageQuota: 3 * 1024 * 1024 * 1024,
           storageUsed: 0,
           settings: {
             accentColor: '#7373F0',

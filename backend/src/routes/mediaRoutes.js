@@ -9,6 +9,8 @@ import {
   deleteMedia, 
   deleteMultiple, 
   restoreMultiple,
+  emptyTrashController,
+  cleanupTrashController,
   recordView,
   saveProgress
 } from '../controllers/mediaController.js';
@@ -20,6 +22,8 @@ router.get('/', listMedia);
 router.post('/upload', uploadChunk.any(), handleChunkedUpload);
 router.post('/delete-multiple', deleteMultiple);
 router.post('/restore-multiple', restoreMultiple);
+router.post('/trash/empty', emptyTrashController);
+router.post('/trash/cleanup', cleanupTrashController);
 router.get('/:id', getMediaById);
 router.put('/:id', updateMedia);
 router.delete('/:id', deleteMedia);

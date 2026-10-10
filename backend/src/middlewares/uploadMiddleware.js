@@ -1,16 +1,18 @@
 import multer from 'multer';
 import fs from 'node:fs';
 import path from 'node:path';
-import { UPLOADS_DIR } from '../config/constants.js';
+import { TEMP_UPLOADS_DIR } from '../config/constants.js';
 
 /**
- * CONFIGURACIÓN DE ALMACENAMIENTO FÍSICO CON MULTER
+ * CONFIGURACIÓN DE PROCESAMIENTO EFÍMERO CON MULTER
+ * Los archivos se procesan temporalmente en el directorio /tmp del sistema operativo
+ * y se eliminan inmediatamente después de cifrarse y subirse a Firebase Storage.
  */
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const userId = req.body.userId || 'anonymous';
     const type = file.mimetype.startsWith('video/') ? 'video' : 'image';
-    const targetDir = path.join(UPLOADS_DIR, userId, type);
+    const targetDir = path.join(TEMP_UPLOADS_DIR, userId, type);
 
     fs.mkdirSync(targetDir, { recursive: true });
     cb(null, targetDir);

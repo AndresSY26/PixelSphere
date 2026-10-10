@@ -51,8 +51,12 @@ import {
   Calendar,
   History,
   Move,
-  Download
+  Download,
+  Crown,
+  CreditCard
 } from 'lucide-react';
+import { api } from '@/api/client';
+import { UpgradePlanDialog } from '@/components/upgrade-plan-dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -307,10 +311,14 @@ export default function SettingsPage() {
     window.dispatchEvent(new CustomEvent('ps-trigger-pwa-install'));
   };
 
-  const QUOTA_BYTES = 26 * 1024 * 1024 * 1024;
+  const [isUpgradeOpen, setIsUpgradeOpen] = useState(false);
+  let QUOTA_BYTES = user?.storageQuota || (3 * 1024 * 1024 * 1024);
+  if ((!user?.plan || user?.plan === 'free') && (QUOTA_BYTES === 16106127360 || QUOTA_BYTES === 2147483648)) {
+    QUOTA_BYTES = 3 * 1024 * 1024 * 1024;
+  }
   const storageUsed = imageStats.size + videoStats.size;
-  const imagePercentage = (imageStats.size / QUOTA_BYTES) * 100;
-  const videoPercentage = (videoStats.size / QUOTA_BYTES) * 100;
+  const imagePercentage = Math.min((imageStats.size / QUOTA_BYTES) * 100, 100);
+  const videoPercentage = Math.min((videoStats.size / QUOTA_BYTES) * 100, 100);
 
   const accentColors = [
     { name: 'Púrpura Pixel', value: '#7373F0' },
@@ -369,10 +377,33 @@ export default function SettingsPage() {
             </TabsContent>
 
             <TabsContent value="storage" className="m-0 animate-slide-up outline-none">
-              <StoragePanel storageUsed={storageUsed} imagePercentage={imagePercentage} videoPercentage={videoPercentage} imageStats={imageStats} videoStats={videoStats} />
+              <StoragePanel 
+                user={user}
+                storageQuota={QUOTA_BYTES}
+                storageUsed={storageUsed} 
+                imagePercentage={imagePercentage} 
+                videoPercentage={videoPercentage} 
+                imageStats={imageStats} 
+                videoStats={videoStats} 
+                onOpenUpgrade={() => setIsUpgradeOpen(true)}
+              />
             </TabsContent>
           </div>
         </Tabs>
+
+        {user && (
+          <UpgradePlanDialog
+            isOpen={isUpgradeOpen}
+            onClose={() => setIsUpgradeOpen(false)}
+            user={user}
+            onPlanUpdated={(updated) => {
+              setUser(updated);
+              window.dispatchEvent(new CustomEvent('neural-update', { 
+                detail: { channel: 'USER_PLAN', data: updated } 
+              }));
+            }}
+          />
+        )}
 
         <Dialog open={is2FASetupOpen} onOpenChange={setIs2FASetupOpen}>
           <DialogContent className="max-w-md bg-[#0a0a0c] border-white/10 rounded-[2.5rem] p-8 shadow-2xl">
@@ -504,92 +535,206 @@ const HistoryPanel = ({ sessions, revokeSession, user }: any) => (
   </Card>
 );
 
-const StoragePanel = ({ storageUsed, imagePercentage, videoPercentage, imageStats, videoStats }: any) => {
+const StoragePanel = ({ user, storageQuota, storageUsed, imagePercentage, videoPercentage, imageStats, videoStats, onOpenUpgrade }: any) => {
+  const [payments, setPayments] = useState<any[]>([]);
+  const [loadingPayments, setLoadingPayments] = useState(false);
+
+  useEffect(() => {
+    if (user?.id) {
+      setLoadingPayments(true);
+      api.payments.getHistory(user.id)
+        .then((res: any) => {
+          if (res?.payments) setPayments(res.payments);
+        })
+        .catch(() => {})
+        .finally(() => setLoadingPayments(false));
+    }
+  }, [user?.id]);
+
+  const planName = user?.plan ? user.plan.toUpperCase() : 'GRATUITO';
+  let effectiveQuota = storageQuota || (3 * 1024 * 1024 * 1024);
+  if ((!user?.plan || user?.plan === 'free') && (effectiveQuota === 16106127360 || effectiveQuota === 2147483648)) {
+    effectiveQuota = 3 * 1024 * 1024 * 1024;
+  }
+
   return (
-    <Card className="bg-card/40 border-white/5 rounded-3xl overflow-hidden backdrop-blur-3xl shadow-2xl">
-      <CardHeader className="p-8 border-b border-white/5 bg-white/[0.02]">
-        <CardTitle className="text-2xl font-bold text-white flex items-center gap-3">
-          <HardDrive className="h-6 w-6 text-primary" /> Almacenamiento
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="p-8 sm:p-10 space-y-12">
-        <div className="space-y-10">
+    <div className="space-y-8">
+      <Card className="bg-card/40 border-white/5 rounded-3xl overflow-hidden backdrop-blur-3xl shadow-2xl">
+        <CardHeader className="p-8 border-b border-white/5 bg-white/[0.02] flex flex-row items-center justify-between">
           <div>
-            <p className="text-[10px] font-black text-muted-foreground uppercase tracking-[0.3em]">Ocupación Física</p>
-            <h3 className="text-5xl font-black text-white tracking-tighter mt-1">
-              {formatBytes(storageUsed)} <span className="text-muted-foreground/40 text-3xl">/ 26 GB</span>
-            </h3>
+            <CardTitle className="text-2xl font-bold text-white flex items-center gap-3">
+              <HardDrive className="h-6 w-6 text-primary" /> Almacenamiento y Plan
+            </CardTitle>
+            <p className="text-xs text-muted-foreground mt-1">
+              Pasarela de facturación activa mediante <span className="font-bold text-white">Google Pay</span>
+            </p>
           </div>
-          
-          <div className="space-y-6">
-            <div className="h-10 w-full bg-white/5 rounded-2xl overflow-hidden flex relative border border-white/5 p-1 group/bar">
-              <TooltipProvider delayDuration={0}>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <div 
-                      className="h-full bg-accent rounded-l-xl cursor-pointer hover:brightness-110 transition-all relative group/segment" 
-                      style={{ width: `${imagePercentage}%`, minWidth: imagePercentage > 0 ? '4px' : '0' }}
-                    >
-                      <div className="absolute inset-0 bg-white/20 opacity-0 group-hover/segment:opacity-100 transition-opacity" />
-                    </div>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" className="bg-accent text-accent-foreground border-none font-bold px-4 py-2 rounded-xl shadow-2xl">
-                    <div className="space-y-0.5">
-                      <p className="text-[10px] uppercase font-black opacity-60">Imágenes (Cian)</p>
-                      <p className="text-sm">Peso: {formatBytes(imageStats.size)}</p>
-                      <p className="text-[10px]">{imageStats.count} activos registrados</p>
-                    </div>
-                  </TooltipContent>
-                </Tooltip>
-
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <div 
-                      className="h-full bg-primary cursor-pointer hover:brightness-110 transition-all relative group/segment" 
-                      style={{ width: `${videoPercentage}%`, minWidth: videoPercentage > 0 ? '4px' : '0' }}
-                    >
-                      <div className="absolute inset-0 bg-white/20 opacity-0 group-hover/segment:opacity-100 transition-opacity" />
-                    </div>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" className="bg-primary text-primary-foreground border-none font-bold px-4 py-2 rounded-xl shadow-2xl">
-                    <div className="space-y-0.5">
-                      <p className="text-[10px] uppercase font-black opacity-60">Videos (Púrpura)</p>
-                      <p className="text-sm">Peso: {formatBytes(videoStats.size)}</p>
-                      <p className="text-[10px]">{videoStats.count} activos registrados</p>
-                    </div>
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-              
-              <div className="flex-1 h-full bg-transparent" />
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-              <div className="p-5 rounded-3xl bg-white/[0.03] border border-white/5 space-y-4 hover:bg-white/[0.05] transition-colors">
-                <div className="flex items-center gap-3">
-                  <div className="w-3 h-3 rounded-full bg-accent shadow-[0_0_10px_#66E0FF]" />
-                  <p className="text-[10px] font-black uppercase text-white tracking-widest">Activos Visuales</p>
+          <Button
+            onClick={onOpenUpgrade}
+            size="sm"
+            className="rounded-full bg-primary hover:bg-primary/90 text-white font-bold text-xs px-4 h-9 flex items-center gap-2 shadow-lg shadow-primary/20"
+          >
+            <CreditCard className="w-4 h-4" />
+            <span>Gestionar con Google Pay</span>
+          </Button>
+        </CardHeader>
+        <CardContent className="p-8 sm:p-10 space-y-12">
+          <div className="space-y-10">
+            <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-2">
+                  <p className="text-[10px] font-black text-muted-foreground uppercase tracking-[0.3em]">Ocupación Física</p>
+                  <Badge variant="outline" className="text-[10px] border-primary/40 text-primary font-black uppercase">
+                    PLAN {planName}
+                  </Badge>
                 </div>
-                <div className="space-y-1">
-                  <p className="text-2xl font-bold text-white">{formatBytes(imageStats.size)}</p>
-                  <p className="text-[10px] text-muted-foreground uppercase font-bold">{imageStats.count} fotos en infraestructura</p>
-                </div>
+                <h3 className="text-5xl font-black text-white tracking-tighter mt-1">
+                  {formatBytes(storageUsed)} <span className="text-muted-foreground/40 text-3xl">/ {formatBytes(effectiveQuota)}</span>
+                </h3>
               </div>
-
-              <div className="p-5 rounded-3xl bg-white/[0.03] border border-white/5 space-y-4 hover:bg-white/[0.05] transition-colors">
-                <div className="flex items-center gap-3">
-                  <div className="w-3 h-3 rounded-full bg-primary shadow-[0_0_10px_#7373F0]" />
-                  <p className="text-[10px] font-black uppercase text-white tracking-widest">Flujo de Video</p>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-2xl font-bold text-white">{formatBytes(videoStats.size)}</p>
-                  <p className="text-[10px] text-muted-foreground uppercase font-bold">{videoStats.count} grabaciones activas</p>
-                </div>
+              <div className="text-sm text-muted-foreground">
+                Disponible: <span className="text-white font-bold">{formatBytes(Math.max(0, effectiveQuota - storageUsed))}</span>
               </div>
             </div>
+            
+            <div className="space-y-6">
+              <div className="h-10 w-full bg-white/5 rounded-2xl overflow-hidden flex relative border border-white/5 p-1 group/bar">
+                <TooltipProvider delayDuration={0}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <div 
+                        className="h-full bg-accent rounded-l-xl cursor-pointer hover:brightness-110 transition-all relative group/segment" 
+                        style={{ width: `${imagePercentage}%`, minWidth: imagePercentage > 0 ? '4px' : '0' }}
+                      >
+                        <div className="absolute inset-0 bg-white/20 opacity-0 group-hover/segment:opacity-100 transition-opacity" />
+                      </div>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="bg-accent text-accent-foreground border-none font-bold px-4 py-2 rounded-xl shadow-2xl">
+                      <div className="space-y-0.5">
+                        <p className="text-[10px] uppercase font-black opacity-60">Imágenes (Cian)</p>
+                        <p className="text-sm">Peso: {formatBytes(imageStats.size)}</p>
+                        <p className="text-[10px]">{imageStats.count} activos registrados</p>
+                      </div>
+                    </TooltipContent>
+                  </Tooltip>
+
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <div 
+                        className="h-full bg-primary cursor-pointer hover:brightness-110 transition-all relative group/segment" 
+                        style={{ width: `${videoPercentage}%`, minWidth: videoPercentage > 0 ? '4px' : '0' }}
+                      >
+                        <div className="absolute inset-0 bg-white/20 opacity-0 group-hover/segment:opacity-100 transition-opacity" />
+                      </div>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="bg-primary text-primary-foreground border-none font-bold px-4 py-2 rounded-xl shadow-2xl">
+                      <div className="space-y-0.5">
+                        <p className="text-[10px] uppercase font-black opacity-60">Videos (Púrpura)</p>
+                        <p className="text-sm">Peso: {formatBytes(videoStats.size)}</p>
+                        <p className="text-[10px]">{videoStats.count} activos registrados</p>
+                      </div>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+                
+                <div className="flex-1 h-full bg-transparent" />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                <div className="p-5 rounded-3xl bg-white/[0.03] border border-white/5 space-y-4 hover:bg-white/[0.05] transition-colors">
+                  <div className="flex items-center gap-3">
+                    <div className="w-3 h-3 rounded-full bg-accent shadow-[0_0_10px_#66E0FF]" />
+                    <p className="text-[10px] font-black uppercase text-white tracking-widest">Activos Visuales</p>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-2xl font-bold text-white">{formatBytes(imageStats.size)}</p>
+                    <p className="text-[10px] text-muted-foreground uppercase font-bold">{imageStats.count} fotos en infraestructura</p>
+                  </div>
+                </div>
+
+                <div className="p-5 rounded-3xl bg-white/[0.03] border border-white/5 space-y-4 hover:bg-white/[0.05] transition-colors">
+                  <div className="flex items-center gap-3">
+                    <div className="w-3 h-3 rounded-full bg-primary shadow-[0_0_10px_#7373F0]" />
+                    <p className="text-[10px] font-black uppercase text-white tracking-widest">Flujo de Video</p>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-2xl font-bold text-white">{formatBytes(videoStats.size)}</p>
+                    <p className="text-[10px] text-muted-foreground uppercase font-bold">{videoStats.count} grabaciones activas</p>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Historial de Pagos y Transacciones Google Pay */}
+      <Card className="bg-card/40 border-white/5 rounded-3xl overflow-hidden backdrop-blur-3xl shadow-2xl p-8 space-y-6">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center font-black text-sm">
+              <span className="text-blue-400">G</span>
+              <span className="text-white ml-0.5">Pay</span>
+            </div>
+            <div>
+              <h4 className="text-lg font-bold text-white">Historial de Facturación y Recibos</h4>
+              <p className="text-xs text-muted-foreground">Transacciones procesadas de forma segura con Google Pay</p>
+            </div>
+          </div>
+          <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20 text-xs font-bold">
+            Google Pay Conectado
+          </Badge>
         </div>
-      </CardContent>
-    </Card>
+
+        {payments.length === 0 ? (
+          <div className="p-8 rounded-2xl bg-white/[0.02] border border-white/5 text-center space-y-2">
+            <p className="text-xs text-muted-foreground">
+              {planName === 'GRATUITO' 
+                ? 'Actualmente te encuentras en el plan Gratuito de 3 GB. Al mejorar tu plan a Pro o Ultra con Google Pay, tus facturas aparecerán aquí.' 
+                : 'No se registran pagos previos.'}
+            </p>
+            {planName === 'GRATUITO' && (
+              <Button
+                onClick={onOpenUpgrade}
+                variant="outline"
+                size="sm"
+                className="mt-2 rounded-full border-white/10 text-xs font-bold hover:bg-white/10"
+              >
+                Ver Planes Disponibles
+              </Button>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {payments.map((p) => (
+              <div 
+                key={p.id}
+                className="p-4 rounded-2xl bg-white/[0.02] border border-white/5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary font-bold">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  </div>
+                  <div>
+                    <p className="font-bold text-white text-sm">
+                      Suscripción {p.plan?.toUpperCase()} ({p.billingCycle === 'yearly' ? 'Anual' : 'Mensual'})
+                    </p>
+                    <p className="text-[11px] font-mono text-muted-foreground">
+                      ID: {p.transactionId} • {new Date(p.createdAt).toLocaleDateString()}
+                    </p>
+                  </div>
+                </div>
+                <div className="text-left sm:text-right">
+                  <span className="font-black text-sm text-emerald-400">${p.amount?.toFixed(2)} USD</span>
+                  <span className="text-[10px] text-muted-foreground block">
+                    Pagado con Google Pay {p.tokenDetails?.cardDetails ? `(${p.tokenDetails.cardDetails})` : ''}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+    </div>
   );
 };

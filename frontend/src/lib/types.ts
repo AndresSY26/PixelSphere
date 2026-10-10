@@ -5,6 +5,9 @@ export interface User {
   passwordHash: string;
   vaultPasswordHash?: string;
   role: 'user' | 'admin';
+  plan?: 'free' | 'pro' | 'ultra';
+  storageQuota?: number;
+  storageUsed?: number;
   avatarUrl?: string;
   avatarSettings?: {
     zoom: number;
@@ -32,8 +35,12 @@ export interface User {
 }
 
 export interface ViewHistoryEntry {
+  id?: string;
   mediaId: string;
   viewedAt: string;
+  source?: string;
+  deviceName?: string;
+  clientIp?: string;
 }
 
 export interface GalleryFilters {
@@ -98,6 +105,7 @@ export interface Media {
   thumbnailUrl: string;
   filename: string;
   size: number;
+  fileHash?: string;
   width: number;
   height: number;
   mimeType: string;

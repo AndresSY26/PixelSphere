@@ -3,12 +3,14 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import DashboardLayout from '@/components/dashboard-layout';
 import { 
-  getMediaByUser, 
+  getTrashMedia, 
   restoreMedia, 
   restoreMultipleMedia, 
   deleteMedia, 
   deleteMultipleMedia,
-  getStoredUser
+  emptyTrash,
+  getStoredUser,
+  getActiveUser
 } from '@/lib/storage';
 import { Media, User } from '@/lib/types';
 import { 
@@ -63,7 +65,7 @@ export default function TrashPage() {
     try {
       setLoading(true);
       let currentUser: User | null = null;
-      const sessionData = localStorage.getItem('ps_active_session');
+      const sessionData = localStorage.getItem('ps_active_session') || localStorage.getItem('pixelsphere_session_user');
       if (sessionData) {
         try {
           currentUser = JSON.parse(sessionData) as User;
@@ -74,32 +76,46 @@ export default function TrashPage() {
       if (!currentUser) {
         currentUser = getStoredUser();
       }
+      if (!currentUser) {
+        currentUser = await getActiveUser();
+      }
 
       if (currentUser) {
         setUser(currentUser);
-        const allMedia = await getMediaByUser(currentUser.id);
-        setMedia(allMedia.filter(m => m.isDeleted === true));
       }
+      
+      const targetUid = currentUser?.id || 'all';
+      const trashItems = await getTrashMedia(targetUid);
+      setMedia(Array.isArray(trashItems) ? trashItems : []);
     } catch (error) {
-      console.error(error);
+      console.error("Error al cargar papelera:", error);
     } finally {
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => { loadData(); }, [loadData]);
+  useEffect(() => { 
+    loadData();
+    const handleUpdate = () => loadData();
+    window.addEventListener('neural-update', handleUpdate);
+    return () => window.removeEventListener('neural-update', handleUpdate);
+  }, [loadData]);
 
   const filteredMedia = useMemo(() => {
-    let result = media.filter(m => m.filename.toLowerCase().includes(searchQuery.toLowerCase()));
-    result.sort((a, b) => new Date(b.deletedAt!).getTime() - new Date(a.deletedAt!).getTime());
+    let result = media.filter(m => (m.filename || '').toLowerCase().includes(searchQuery.toLowerCase()));
+    result.sort((a, b) => {
+      const timeB = new Date(b.deletedAt || b.createdAt).getTime() || 0;
+      const timeA = new Date(a.deletedAt || a.createdAt).getTime() || 0;
+      return timeB - timeA;
+    });
     return result;
   }, [media, searchQuery]);
 
   const handleRestore = async (id: string) => {
-    if (!user) return;
+    const activeUid = user?.id || getStoredUser()?.id || 'all';
     setIsProcessing(true);
     try {
-      await restoreMedia(id, user.id);
+      await restoreMedia(id, activeUid);
       setMedia(prev => prev.filter(m => m.id !== id));
       toast({ title: "Activo Restaurado", description: "El archivo ha vuelto a su ubicación original." });
     } catch (e) {
@@ -111,12 +127,12 @@ export default function TrashPage() {
   };
 
   const handlePermanentDelete = async (id: string) => {
-    if (!user) return;
+    const activeUid = user?.id || getStoredUser()?.id || 'all';
     setIsProcessing(true);
     try {
-      await deleteMedia(id, user.id);
+      await deleteMedia(id, activeUid, true);
       setMedia(prev => prev.filter(m => m.id !== id));
-      toast({ title: "Purga Física Completada", description: "El activo ha sido eliminado permanentemente del disco." });
+      toast({ title: "Purga Definitiva Completada", description: "El activo ha sido eliminado permanentemente de PostgreSQL y Firebase Storage." });
     } catch (e) {
       console.error("Error al purgar medio permanentemente:", e);
       toast({ title: "Error", variant: "destructive" });
@@ -126,10 +142,11 @@ export default function TrashPage() {
   };
 
   const handleBulkRestore = async () => {
-    if (!user || selectedIds.size === 0) return;
+    if (selectedIds.size === 0) return;
+    const activeUid = user?.id || getStoredUser()?.id || 'all';
     setIsProcessing(true);
     try {
-      await restoreMultipleMedia(Array.from(selectedIds), user.id);
+      await restoreMultipleMedia(Array.from(selectedIds), activeUid);
       setMedia(prev => prev.filter(m => !selectedIds.has(m.id)));
       setSelectedIds(new Set());
       setIsSelectionMode(false);
@@ -143,14 +160,15 @@ export default function TrashPage() {
   };
 
   const handleBulkPermanentDelete = async () => {
-    if (!user || selectedIds.size === 0) return;
+    if (selectedIds.size === 0) return;
+    const activeUid = user?.id || getStoredUser()?.id || 'all';
     setIsProcessing(true);
     try {
-      await deleteMultipleMedia(Array.from(selectedIds), user.id);
+      await deleteMultipleMedia(Array.from(selectedIds), activeUid, true);
       setMedia(prev => prev.filter(m => !selectedIds.has(m.id)));
       setSelectedIds(new Set());
       setIsSelectionMode(false);
-      toast({ title: "Purga Masiva Completada" });
+      toast({ title: "Purga Masiva Completada", description: "Los activos seleccionados fueron eliminados de PostgreSQL y Firebase Storage." });
     } catch (e) {
       console.error("Error en eliminación permanente masiva:", e);
       toast({ title: "Error", variant: "destructive" });
@@ -160,14 +178,14 @@ export default function TrashPage() {
   };
 
   const handleEmptyTrash = async () => {
-    if (!user || media.length === 0) return;
+    if (media.length === 0) return;
+    const activeUid = user?.id || getStoredUser()?.id || 'all';
     setIsProcessing(true);
     try {
-      const allIds = media.map(m => m.id);
-      await deleteMultipleMedia(allIds, user.id);
+      await emptyTrash(activeUid);
       setMedia([]);
       setConfirmEmptyTrash(false);
-      toast({ title: "Papelera Vaciada", description: "Toda la infraestructura de residuos ha sido purgada." });
+      toast({ title: "Papelera Vaciada", description: "Todos los elementos han sido eliminados de PostgreSQL y Firebase Storage." });
     } catch (e) {
       console.error("Error al vaciar papelera:", e);
       toast({ title: "Error", variant: "destructive" });
@@ -186,8 +204,10 @@ export default function TrashPage() {
     });
   };
 
-  const getDaysRemaining = (deletedAt: string) => {
+  const getDaysRemaining = (deletedAt?: string | null) => {
+    if (!deletedAt) return 30;
     const deletionDate = new Date(deletedAt);
+    if (isNaN(deletionDate.getTime())) return 30;
     const now = new Date();
     const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
     const elapsed = now.getTime() - deletionDate.getTime();

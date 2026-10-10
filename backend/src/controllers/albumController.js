@@ -97,7 +97,7 @@ export async function addMediaToAlbum(req, res) {
       return res.status(400).json({ error: 'Se requiere una lista de IDs de medios.' });
     }
 
-    // 1. Actualizar album.mediaIds en albums.json
+    // 1. Actualizar album.mediaIds en base de datos PostgreSQL
     const albums = await getAlbums();
     const album = albums.find(a => a.id === id);
     if (album) {
@@ -106,7 +106,7 @@ export async function addMediaToAlbum(req, res) {
       await updateAlbumStorage(id, userId, { mediaIds: updatedMediaIds });
     }
 
-    // 2. Actualizar media en media.json
+    // 2. Actualizar media en base de datos PostgreSQL
     const allMedia = await getMedia();
     const mediaSet = new Set(mediaIds);
     for (const m of allMedia) {

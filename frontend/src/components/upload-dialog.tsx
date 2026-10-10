@@ -24,10 +24,13 @@ import {
   Camera,
   SwitchCamera,
   ShieldAlert,
+  AlertCircle,
   Plus,
   Navigation,
   FileText,
-  FileVideo
+  FileVideo,
+  Sparkles,
+  ShieldCheck
 } from 'lucide-react';
 import {
   Tooltip,
@@ -354,7 +357,7 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
     const driveItems = itemsToUpload.filter(it => it.isFromDrive && it.driveItem);
     const localItems = itemsToUpload.filter(it => !it.isFromDrive && it.file);
 
-    // 1. Ingesta de lote de Google Drive (alta velocidad, streaming directo de Google a disco)
+    // 1. Ingesta de archivos de Google Drive (procesamiento resiliente item a item con reintentos para evitar timeouts 503)
     if (driveItems.length > 0) {
       try {
         const token = await getAccessToken();
@@ -362,45 +365,70 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
           throw new Error('Sesión de Google no disponible o expirada. Por favor abre Drive y reconecta.');
         }
 
-        setUploadQueue(prev => prev.map(f => f.isFromDrive ? { ...f, status: 'uploading' } : f));
+        for (let i = 0; i < driveItems.length; i++) {
+          const it = driveItems[i];
+          setUploadQueue(prev => prev.map(f => f.id === it.id ? { ...f, status: 'uploading', progress: 15 } : f));
 
-        const batchRes = await fetch('/api/cloud/import-drive-batch', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify({
-            userId: user.id,
-            token,
-            items: driveItems.map(it => ({
-              id: it.driveItem!.id,
-              name: it.name,
-              mimeType: it.mimeType,
-              size: it.size,
-              isAdult: it.isAdultContent,
-              isPrivate: it.isPrivate
-            }))
-          })
-        });
+          let importedSuccess = false;
+          let lastDriveErr: any = null;
 
-        if (!batchRes.ok) {
-          const errData = await batchRes.json().catch(() => ({}));
-          throw new Error(errData.error || `Error en lote de Drive (${batchRes.status})`);
+          // Reintentos automáticos (soporta 503 de red temporales)
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              const res = await fetch('/api/cloud/import-drive-batch', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({
+                  userId: user.id,
+                  token,
+                  items: [{
+                    id: it.driveItem!.id,
+                    name: it.name,
+                    mimeType: it.mimeType,
+                    size: it.size,
+                    isAdult: it.isAdultContent,
+                    isPrivate: it.isPrivate
+                  }]
+                })
+              });
+
+              if (res.ok) {
+                const data = await res.json();
+                if (data.importedCount > 0) {
+                  importedSuccess = true;
+                  completedCount++;
+                  setUploadQueue(prev => prev.map(f => f.id === it.id ? { ...f, status: 'completed', progress: 100 } : f));
+                  break;
+                } else if (data.errors && data.errors.length > 0) {
+                  throw new Error(data.errors[0].error || 'Error procesando archivo');
+                }
+              } else {
+                const errJson = await res.json().catch(() => ({}));
+                throw new Error(errJson.error || `Error en servidor HTTP ${res.status}`);
+              }
+            } catch (err: any) {
+              lastDriveErr = err;
+              if (attempt < 2) {
+                await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+              }
+            }
+          }
+
+          if (!importedSuccess) {
+            console.warn(`[DriveImport] Error importando ${it.name}:`, lastDriveErr?.message);
+            setUploadQueue(prev => prev.map(f => f.id === it.id ? { ...f, status: 'error' } : f));
+          }
         }
-
-        const batchData = await batchRes.json();
-        completedCount += batchData.importedCount || driveItems.length;
-
-        setUploadQueue(prev => prev.map(f => f.isFromDrive ? { ...f, status: 'completed', progress: 100 } : f));
       } catch (driveErr: any) {
-        console.error('Error importando lote de Drive:', driveErr);
+        console.warn('Error en conexión con Google Drive:', driveErr.message);
         toast({
           variant: 'destructive',
-          title: 'Error de Ingesta Drive',
+          title: 'Sesión de Google Drive',
           description: driveErr.message
         });
-        setUploadQueue(prev => prev.map(f => f.isFromDrive ? { ...f, status: 'error' } : f));
       }
     }
 
@@ -589,6 +617,14 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
                 <div className="text-center">
                   <p className="text-white font-bold text-lg">Ingesta de Archivos Locales</p>
                   <p className="text-muted-foreground text-xs mt-1">Selecciona o arrastra imágenes y videos desde tu dispositivo.</p>
+                  <div className="mt-3.5 flex items-center justify-center gap-2 flex-wrap">
+                    <Badge variant="outline" className="text-[10px] bg-primary/10 text-primary border-primary/20 py-0.5 px-2.5 rounded-full font-medium">
+                      <Sparkles className="h-3 w-3 mr-1" /> WebP / WebM Auto
+                    </Badge>
+                    <Badge variant="outline" className="text-[10px] bg-emerald-500/10 text-emerald-400 border-emerald-500/20 py-0.5 px-2.5 rounded-full font-medium">
+                      <ShieldCheck className="h-3 w-3 mr-1" /> Cifrado Zero-Knowledge
+                    </Badge>
+                  </div>
                 </div>
               </div>
 

@@ -16,7 +16,8 @@ import {
   removeMultipleFromAlbum,
   findUserByUsername,
   recordInteraction,
-  getFrequentContacts
+  getFrequentContacts,
+  recordMediaView
 } from '@/lib/storage';
 import { Media, User, Album } from '@/lib/types';
 import { 
@@ -339,6 +340,12 @@ export default function PrivateFolderPage() {
   }, []);
 
   const openViewer = useCallback((item: Media) => {
+    if (user) {
+      recordMediaView(user.id, item.id, {
+        source: 'Carpeta Privada',
+        deviceName: /mobile|android|iphone/i.test(navigator?.userAgent || '') ? 'Dispositivo Móvil' : 'Escritorio'
+      });
+    }
     if (item.isAdultContent) {
       setAdultToConfirm(item);
     } else {
@@ -347,7 +354,7 @@ export default function PrivateFolderPage() {
       setTagSuggestions([]);
       setLinkNavParentId(null);
     }
-  }, []);
+  }, [user]);
 
   const handleUpdateMediaMeta = async (updates: Partial<Media>) => {
     if (!selectedMedia || !user) return;
@@ -430,10 +437,12 @@ export default function PrivateFolderPage() {
   };
 
   const handleDeleteToTrash = async () => {
-    if (!selectedMedia || !user) return;
+    if (!selectedMedia) return;
+    const activeUid = user?.id || getStoredUser()?.id || 'all';
     try {
-      await deleteMedia(selectedMedia.id, user.id);
-      toast({ title: "Movido a Papelera", description: "Tienes 30 días para recuperarlo." });
+      await deleteMedia(selectedMedia.id, activeUid);
+      setMedia(prev => prev.filter(m => m.id !== selectedMedia.id));
+      toast({ title: "Movido a Papelera", description: "Tienes 30 días para recuperarlo antes de su purga definitiva." });
       setSelectedMedia(null);
     } catch (e) {
       console.error("Error al enviar medio de bóveda a papelera:", e);
@@ -784,7 +793,14 @@ export default function PrivateFolderPage() {
               <div className="flex items-center gap-2">
                 <Button variant="outline" size="sm" className="rounded-xl border-white/10 text-white bg-white/5" onClick={handleBulkDownload} disabled={isExporting}>{isExporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}</Button>
                 <Button variant="outline" size="sm" className="rounded-xl border-white/10 text-white bg-white/5" onClick={async () => { await updateMultipleMedia(Array.from(selectedIds), user!.id, { isPrivate: false }); setSelectedIds(new Set()); setIsSelectionMode(false); }}><Unlock className="h-4 w-4" /> Restaurar</Button>
-                <Button variant="destructive" size="sm" className="rounded-xl" onClick={async () => { await deleteMultipleMedia(Array.from(selectedIds), user!.id); setSelectedIds(new Set()); setIsSelectionMode(false); }}><Trash2 className="h-4 w-4" /> Borrar</Button>
+                <Button variant="destructive" size="sm" className="rounded-xl" onClick={async () => {
+                  const idsToDelete = Array.from(selectedIds);
+                  await deleteMultipleMedia(idsToDelete, user!.id);
+                  setMedia(prev => prev.filter(m => !selectedIds.has(m.id)));
+                  setSelectedIds(new Set());
+                  setIsSelectionMode(false);
+                  toast({ title: "Movido a Papelera", description: `${idsToDelete.length} activos enviados a la papelera.` });
+                }}><Trash2 className="h-4 w-4" /> Borrar</Button>
               </div>
             </div>
           ) : (
@@ -830,7 +846,18 @@ export default function PrivateFolderPage() {
           </DialogHeader>
           <DialogFooter className="flex flex-col sm:flex-row gap-3 mt-6">
             <Button variant="ghost" onClick={() => setAdultToConfirm(null)} className="flex-1 rounded-xl text-white">Cancelar</Button>
-            <Button className="flex-1 bg-accent text-accent-foreground font-bold rounded-xl h-12" onClick={() => { setSelectedMedia(adultToConfirm); setAdultToConfirm(null); setTagInput(''); setTagSuggestions([]); }}>Confirmar Acceso</Button>
+            <Button className="flex-1 bg-accent text-accent-foreground font-bold rounded-xl h-12" onClick={() => { 
+              if (user && adultToConfirm) {
+                recordMediaView(user.id, adultToConfirm.id, {
+                  source: 'Carpeta Privada',
+                  deviceName: /mobile|android|iphone/i.test(navigator?.userAgent || '') ? 'Dispositivo Móvil' : 'Escritorio'
+                });
+              }
+              setSelectedMedia(adultToConfirm); 
+              setAdultToConfirm(null); 
+              setTagInput(''); 
+              setTagSuggestions([]); 
+            }}>Confirmar Acceso</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -841,7 +868,7 @@ export default function PrivateFolderPage() {
             <div className="flex flex-col lg:flex-row h-full overflow-hidden">
               <div className="relative h-[50vh] sm:h-[60vh] lg:h-full lg:flex-1 bg-black flex items-center justify-center overflow-hidden shrink-0">
                 <Button variant="ghost" size="icon" className="absolute top-4 left-4 z-50 rounded-full bg-black/40 text-white lg:hidden" onClick={() => setSelectedMedia(null)}><X className="h-6 w-6" /></Button>
-                {selectedMedia.type === 'video' ? <NeuralVideoPlayer src={selectedMedia.url} className="w-full h-full" /> : <img src={selectedMedia.url} className="w-full h-full object-contain" alt="" />}
+                {selectedMedia.type === 'video' ? <NeuralVideoPlayer key={selectedMedia.id} src={selectedMedia.url} mediaId={selectedMedia.id} className="w-full h-full" /> : <img src={selectedMedia.url} className="w-full h-full object-contain" alt="" />}
               </div>
               <div className="flex-1 lg:w-[400px] bg-card border-t lg:border-t-0 lg:border-l border-white/10 flex flex-col overflow-hidden rounded-t-[2.5rem] lg:rounded-none">
                 <ScrollArea className="flex-1">

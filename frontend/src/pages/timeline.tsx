@@ -344,7 +344,7 @@ export default function TimelinePage() {
               <div className="flex flex-col lg:flex-row h-full overflow-hidden">
                 <div className="relative h-[50vh] sm:h-[60vh] lg:h-full lg:flex-1 bg-black flex items-center justify-center overflow-hidden shrink-0">
                   <Button variant="ghost" size="icon" className="absolute top-6 left-6 z-50 rounded-full bg-black/40 text-white lg:hidden" onClick={() => setSelectedMedia(null)}><X className="h-6 w-6" /></Button>
-                  {selectedMedia.type === 'video' ? <NeuralVideoPlayer src={selectedMedia.url} className="w-full h-full" /> : <img src={selectedMedia.url} className="w-full h-full object-contain" alt="" />}
+                  {selectedMedia.type === 'video' ? <NeuralVideoPlayer key={selectedMedia.id} src={selectedMedia.url} mediaId={selectedMedia.id} className="w-full h-full" /> : <img src={selectedMedia.url} className="w-full h-full object-contain" alt="" />}
                 </div>
                 <div className="flex-1 lg:w-[420px] bg-card border-t lg:border-t-0 lg:border-l border-white/10 flex flex-col overflow-hidden">
                   <ScrollArea className="flex-1">

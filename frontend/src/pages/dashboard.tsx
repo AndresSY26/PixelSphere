@@ -66,12 +66,31 @@ export default function DashboardPage() {
   }, [fetchData]);
 
   const stats = useMemo(() => {
+    let sessionUser: User | null = null;
+    if (typeof window !== 'undefined') {
+      try {
+        const s = localStorage.getItem('ps_active_session');
+        if (s) sessionUser = JSON.parse(s);
+      } catch (e) {}
+    }
+
     const totalSizeBytes = media.reduce((acc, curr) => acc + (curr.size || 0), 0);
-    const quotaGB = 26;
-    const usedPercentage = Math.min(Math.round((totalSizeBytes / (quotaGB * 1024 * 1024 * 1024)) * 100), 100);
+    let quotaBytes = sessionUser?.storageQuota || (3 * 1024 * 1024 * 1024);
+    if ((!sessionUser?.plan || sessionUser.plan === 'free') && (quotaBytes === 16106127360 || quotaBytes === 2147483648)) {
+      quotaBytes = 3 * 1024 * 1024 * 1024;
+    }
+    const usedPercentage = Math.min(Math.round((totalSizeBytes / quotaBytes) * 100), 100);
+    const planLabel = sessionUser?.plan ? sessionUser.plan.toUpperCase() : 'GRATUITO';
 
     return [
-      { label: 'Espacio Usado', value: formatBytes(totalSizeBytes), total: `${quotaGB} GB`, progress: usedPercentage, icon: HardDrive, color: 'text-primary' },
+      { 
+        label: `Espacio (${planLabel})`, 
+        value: formatBytes(totalSizeBytes), 
+        total: formatBytes(quotaBytes), 
+        progress: usedPercentage, 
+        icon: HardDrive, 
+        color: usedPercentage >= 95 ? 'text-red-400' : usedPercentage >= 80 ? 'text-amber-400' : 'text-primary' 
+      },
       { label: 'Fotos', value: media.filter(m => m.type === 'image').length.toString(), icon: ImageIcon, color: 'text-accent' },
       { label: 'Videos', value: media.filter(m => m.type === 'video').length.toString(), icon: Film, color: 'text-primary' },
       { label: 'Privados', value: media.filter(m => m.isPrivate).length.toString(), icon: ShieldCheck, color: 'text-accent' },

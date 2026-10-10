@@ -24,7 +24,10 @@ import {
   ChevronRight,
   FolderOpen,
   ShieldAlert,
-  Clock
+  Clock,
+  Crown,
+  Sparkles,
+  HardDrive
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -51,11 +54,12 @@ import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
 import { User, Album } from '@/lib/types';
 import { getAlbums, getAlbumsByUser, addMultipleToAlbum, clearStoredUser } from '@/lib/storage';
-import { cn } from '@/lib/utils';
+import { cn, formatBytes } from '@/lib/utils';
 import UploadDialog from '@/components/upload-dialog';
-import { DatabaseInspectorDialog } from '@/components/database-inspector-dialog';
+import { UpgradePlanDialog } from '@/components/upgrade-plan-dialog';
 import { useNeuralSync } from '@/hooks/use-neural-sync';
 import { logoutGoogle } from '@/lib/google-auth';
+import { api } from '@/api/client';
 
 interface NavItem {
   name: string;
@@ -84,8 +88,13 @@ const SidebarContent = ({
   setIsMobileMenuOpen,
   isLive,
   isAlbumsExpanded,
-  setIsAlbumsExpanded
+  setIsAlbumsExpanded,
+  onOpenUpgradePlan
 }: any) => {
+  const quota = user?.storageQuota || (3 * 1024 * 1024 * 1024);
+  const used = user?.storageUsed || 0;
+  const usedPercent = Math.min(Math.round((used / quota) * 100), 100);
+
   const navGroups: NavGroup[] = [
     {
       label: 'MI UNIVERSO',
@@ -218,9 +227,55 @@ const SidebarContent = ({
         ))}
       </div>
       
-      <div className="p-6 border-t border-white/5 bg-black/40">
-        <Button variant="ghost" className="w-full justify-start gap-4 text-red-500 hover:text-red-400 hover:bg-red-500/10 rounded-2xl h-14 px-3" onClick={handleLogout}>
-          <div className="w-9 h-9 rounded-full bg-white/5 border border-white/10 flex items-center justify-center shrink-0"><LogOut className="h-4 w-4" /></div>
+      {/* Panel de Cuota de Almacenamiento y Plan */}
+      {(isSidebarOpen || isMobile) && (
+        <div className="px-4 py-3 border-t border-white/5 bg-white/[0.01]">
+          <div className="p-3.5 rounded-2xl bg-white/[0.03] border border-white/5 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <HardDrive className="h-3.5 w-3.5 text-primary shrink-0" />
+                <span className="text-[10px] font-black text-white uppercase tracking-wider truncate">
+                  {user?.plan ? `PLAN ${user.plan.toUpperCase()}` : 'PLAN GRATUITO'}
+                </span>
+              </div>
+              <span className={cn(
+                "text-[10px] font-extrabold",
+                usedPercent >= 95 ? "text-red-400" : usedPercent >= 80 ? "text-amber-400" : "text-muted-foreground"
+              )}>
+                {usedPercent}%
+              </span>
+            </div>
+
+            <div className="w-full bg-white/10 h-1.5 rounded-full overflow-hidden">
+              <div 
+                className={cn(
+                  "h-full transition-all duration-500 rounded-full",
+                  usedPercent >= 95 ? "bg-red-500" : usedPercent >= 80 ? "bg-amber-400" : "bg-primary"
+                )}
+                style={{ width: `${Math.min(usedPercent, 100)}%` }}
+              />
+            </div>
+
+            <div className="flex items-center justify-between text-[10px] text-muted-foreground font-medium">
+              <span>{formatBytes(used)}</span>
+              <span>de {formatBytes(quota)}</span>
+            </div>
+
+            <Button
+              size="sm"
+              onClick={onOpenUpgradePlan}
+              className="w-full h-8 text-[11px] font-extrabold rounded-xl bg-primary hover:bg-primary/90 text-white flex items-center justify-center gap-1.5 transition-all shadow-md shadow-primary/20"
+            >
+              <Crown className="h-3.5 w-3.5" />
+              Mejorar Plan
+            </Button>
+          </div>
+        </div>
+      )}
+
+      <div className="p-4 border-t border-white/5 bg-black/40">
+        <Button variant="ghost" className="w-full justify-start gap-4 text-red-500 hover:text-red-400 hover:bg-red-500/10 rounded-2xl h-12 px-3" onClick={handleLogout}>
+          <div className="w-8 h-8 rounded-full bg-white/5 border border-white/10 flex items-center justify-center shrink-0"><LogOut className="h-4 w-4" /></div>
           {(isSidebarOpen || isMobile) && <span className="text-sm font-bold tracking-wide">Desconectar</span>}
         </Button>
       </div>
@@ -247,6 +302,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [isSidebarOpen, setSidebarOpen] = useState(true);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isUploadOpen, setIsUploadOpen] = useState(false);
+  const [isUpgradeOpen, setIsUpgradeOpen] = useState(false);
   const [searchVal, setSearchVal] = useState('');
   const [dragOverAlbumId, setDragOverAlbumId] = useState<string | null>(null);
   const [isDraggingGlobal, setIsDraggingGlobal] = useState(false);
@@ -271,8 +327,23 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     if (sessionData) {
       try {
         const u = JSON.parse(sessionData);
+        // Normalizar cuota si era 15GB o 2GB desactualizada de sesiones previas
+        if ((!u.plan || u.plan === 'free') && (!u.storageQuota || u.storageQuota === 16106127360 || u.storageQuota === 2147483648)) {
+          u.storageQuota = 3 * 1024 * 1024 * 1024;
+          localStorage.setItem('ps_active_session', JSON.stringify(u));
+          localStorage.setItem('pixelsphere_session_user', JSON.stringify(u));
+        }
         setUser(u);
         getAlbums().then(setAlbums);
+
+        // Sincronizar en tiempo real con Neon PostgreSQL
+        api.auth.getProfile(u.id).then((freshUser: any) => {
+          if (freshUser && freshUser.id) {
+            setUser(freshUser);
+            localStorage.setItem('ps_active_session', JSON.stringify(freshUser));
+            localStorage.setItem('pixelsphere_session_user', JSON.stringify(freshUser));
+          }
+        }).catch(() => {});
       } catch (e) {
         router.push('/login');
       }
@@ -282,6 +353,21 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
     const onNeural = () => {
       getAlbums().then(setAlbums).catch(() => {});
+      const current = localStorage.getItem('ps_active_session');
+      if (current) {
+        try {
+          const cu = JSON.parse(current);
+          if (cu?.id) {
+            api.auth.getProfile(cu.id).then((fresh: any) => {
+              if (fresh?.id) {
+                setUser(fresh);
+                localStorage.setItem('ps_active_session', JSON.stringify(fresh));
+                localStorage.setItem('pixelsphere_session_user', JSON.stringify(fresh));
+              }
+            }).catch(() => {});
+          }
+        } catch (e) {}
+      }
     };
     window.addEventListener('neural-update', onNeural);
     return () => window.removeEventListener('neural-update', onNeural);
@@ -342,6 +428,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           isLive={!!user} 
           isAlbumsExpanded={isAlbumsExpanded}
           setIsAlbumsExpanded={setIsAlbumsExpanded}
+          onOpenUpgradePlan={() => setIsUpgradeOpen(true)}
         />
       </aside>
       
@@ -367,6 +454,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                   isLive={!!user} 
                   isAlbumsExpanded={isAlbumsExpanded}
                   setIsAlbumsExpanded={setIsAlbumsExpanded}
+                  onOpenUpgradePlan={() => {
+                    setIsMobileMenuOpen(false);
+                    setIsUpgradeOpen(true);
+                  }}
                 />
               </SheetContent>
             </Sheet>
@@ -377,7 +468,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             </form>
           </div>
           <div className="flex items-center gap-3">
-            <DatabaseInspectorDialog />
+            <Button 
+              variant="outline" 
+              onClick={() => setIsUpgradeOpen(true)}
+              className="hidden sm:flex border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 text-xs font-bold rounded-full h-9 px-3.5 items-center gap-1.5"
+            >
+              <Crown className="h-3.5 w-3.5" />
+              <span>{user?.plan ? `PLAN ${user.plan.toUpperCase()}` : 'PLAN GRATUITO'}</span>
+            </Button>
             <Button onClick={() => setIsUploadOpen(true)} className="bg-primary text-white rounded-full h-9 px-4 font-bold"><Plus className="mr-2 h-4 w-4" /> Ingesta</Button>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -386,6 +484,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               <DropdownMenuContent align="end" className="w-56 bg-card border-white/10">
                 <DropdownMenuLabel>Mi Nodo</DropdownMenuLabel>
                 <DropdownMenuSeparator className="bg-white/5" />
+                <DropdownMenuItem onClick={() => setIsUpgradeOpen(true)}>Planes y Cuotas</DropdownMenuItem>
                 <DropdownMenuItem onClick={() => router.push('/settings')}>Configuración</DropdownMenuItem>
                 <DropdownMenuItem onClick={() => router.push('/history')}>Historial</DropdownMenuItem>
                 <DropdownMenuSeparator className="bg-white/5" />
@@ -397,16 +496,29 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <main className="flex-1 overflow-y-auto scrollbar-hide p-6">{children}</main>
       </div>
       {user && (
-        <UploadDialog 
-          isOpen={isUploadOpen} 
-          onClose={() => setIsUploadOpen(false)} 
-          user={user} 
-          onUploadSuccess={() => {
-            window.dispatchEvent(new CustomEvent('neural-update', { 
-              detail: { channel: 'MEDIA', data: { userId: user.id } } 
-            }));
-          }}
-        />
+        <>
+          <UploadDialog 
+            isOpen={isUploadOpen} 
+            onClose={() => setIsUploadOpen(false)} 
+            user={user} 
+            onUploadSuccess={() => {
+              window.dispatchEvent(new CustomEvent('neural-update', { 
+                detail: { channel: 'MEDIA', data: { userId: user.id } } 
+              }));
+            }}
+          />
+          <UpgradePlanDialog
+            isOpen={isUpgradeOpen}
+            onClose={() => setIsUpgradeOpen(false)}
+            user={user}
+            onPlanUpdated={(updatedUser) => {
+              setUser(updatedUser);
+              window.dispatchEvent(new CustomEvent('neural-update', { 
+                detail: { channel: 'USER_PLAN', data: updatedUser } 
+              }));
+            }}
+          />
+        </>
       )}
     </div>
   );

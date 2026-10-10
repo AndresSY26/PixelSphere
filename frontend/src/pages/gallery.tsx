@@ -221,10 +221,11 @@ export default function GalleryPage() {
   }, [loading, loadMoreItems]);
 
   const handleDelete = useCallback(async (mediaId: string) => {
-    if (!user) return;
+    const activeUid = user?.id || getStoredUser()?.id || 'all';
     try { 
-      await deleteMedia(mediaId, user.id); 
-      toast({ title: "Movido a Papelera" }); 
+      await deleteMedia(mediaId, activeUid); 
+      setMedia(prev => prev.filter(m => m.id !== mediaId));
+      toast({ title: "Movido a Papelera", description: "El activo estará disponible 30 días antes de su purga definitiva." }); 
       setSelectedMedia(null); 
     } catch (e) {
       console.error("Error al mover medio a papelera:", e);
@@ -277,7 +278,12 @@ export default function GalleryPage() {
       setTagSuggestions([]); 
       setLinkNavParentId(null);
       // REGISTRAR VISTA EN EL HISTORIAL
-      if (user) recordMediaView(user.id, item.id);
+      if (user) {
+        recordMediaView(user.id, item.id, {
+          source: 'Galería Principal',
+          deviceName: /mobile|android|iphone/i.test(navigator?.userAgent || '') ? 'Dispositivo Móvil' : 'Escritorio'
+        });
+      }
     }
   }, [isSelectionMode, toggleSelection, user]);
 
@@ -298,8 +304,21 @@ export default function GalleryPage() {
                 <span className="text-sm font-bold">{selectedIds.size} seleccionados</span>
               </div>
               <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm" className="rounded-xl border-white/10 bg-white/5" onClick={async () => { await updateMultipleMedia(Array.from(selectedIds), user!.id, { isPrivate: true }); setSelectedIds(new Set()); setIsSelectionMode(false); }}><Lock className="h-4 w-4" /></Button>
-                <Button variant="destructive" size="sm" className="rounded-xl" onClick={async () => { await deleteMultipleMedia(Array.from(selectedIds), user!.id); setSelectedIds(new Set()); setIsSelectionMode(false); }}><Trash2 className="h-4 w-4" /></Button>
+                <Button variant="outline" size="sm" className="rounded-xl border-white/10 bg-white/5" onClick={async () => { 
+                  const activeUid = user?.id || getStoredUser()?.id || 'all';
+                  await updateMultipleMedia(Array.from(selectedIds), activeUid, { isPrivate: true }); 
+                  setSelectedIds(new Set()); 
+                  setIsSelectionMode(false); 
+                }}><Lock className="h-4 w-4" /></Button>
+                <Button variant="destructive" size="sm" className="rounded-xl" onClick={async () => {
+                  const idsToDelete = Array.from(selectedIds);
+                  const activeUid = user?.id || getStoredUser()?.id || 'all';
+                  await deleteMultipleMedia(idsToDelete, activeUid);
+                  setMedia(prev => prev.filter(m => !selectedIds.has(m.id)));
+                  setSelectedIds(new Set());
+                  setIsSelectionMode(false);
+                  toast({ title: "Movido a Papelera", description: `${idsToDelete.length} activos enviados a la papelera.` });
+                }}><Trash2 className="h-4 w-4" /></Button>
               </div>
             </div>
           ) : (
@@ -369,7 +388,16 @@ export default function GalleryPage() {
           </DialogHeader>
           <DialogFooter className="flex flex-col sm:flex-row gap-3 mt-6">
             <Button variant="ghost" onClick={() => setAdultToConfirm(null)} className="flex-1 rounded-xl text-white">Cancelar</Button>
-            <Button className="flex-1 bg-accent text-accent-foreground font-bold rounded-xl h-12" onClick={() => { setSelectedMedia(adultToConfirm); setAdultToConfirm(null); }}>Confirmar Acceso</Button>
+            <Button className="flex-1 bg-accent text-accent-foreground font-bold rounded-xl h-12" onClick={() => { 
+              if (user && adultToConfirm) {
+                recordMediaView(user.id, adultToConfirm.id, {
+                  source: 'Galería Principal',
+                  deviceName: /mobile|android|iphone/i.test(navigator?.userAgent || '') ? 'Dispositivo Móvil' : 'Escritorio'
+                });
+              }
+              setSelectedMedia(adultToConfirm); 
+              setAdultToConfirm(null); 
+            }}>Confirmar Acceso</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -382,6 +410,7 @@ export default function GalleryPage() {
                 <Button variant="ghost" size="icon" className="absolute top-4 left-4 z-50 rounded-full bg-black/40 text-white lg:hidden" onClick={() => setSelectedMedia(null)}><X className="h-6 w-6" /></Button>
                 {selectedMedia.type === 'video' ? (
                   <NeuralVideoPlayer 
+                    key={selectedMedia.id}
                     src={selectedMedia.url} 
                     mediaId={selectedMedia.id} 
                     userId={user?.id || ''} 

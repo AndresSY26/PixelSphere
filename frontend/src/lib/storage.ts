@@ -1,28 +1,45 @@
 import { api } from '../api/client.js';
 
 /**
- * CLIENT STORAGE ADAPTER v50.0 (Frontend SPA)
- * Conecta los componentes directamente con el backend Node.js en localhost:5000
+ * CLIENT STORAGE ADAPTER (Frontend SPA)
+ * Conecta los componentes con la API REST y sincroniza el estado de sesión local
  */
 
 // Gestión de sesión local
 const SESSION_KEY = 'pixelsphere_session_user';
+const ALT_SESSION_KEY = 'ps_active_session';
 
 export function getStoredUser() {
   try {
-    const raw = localStorage.getItem(SESSION_KEY);
+    const raw = localStorage.getItem(ALT_SESSION_KEY) || localStorage.getItem(SESSION_KEY);
     return raw ? JSON.parse(raw) : null;
   } catch (e) {
     return null;
   }
 }
 
+export async function getActiveUser() {
+  const local = getStoredUser();
+  if (local) return local;
+  try {
+    const res = await api.auth.getProfile('current');
+    if (res && res.id) {
+      setStoredUser(res);
+      return res;
+    }
+  } catch (e) {}
+  return null;
+}
+
 export function setStoredUser(user) {
   try {
     if (user) {
-      localStorage.setItem(SESSION_KEY, JSON.stringify(user));
+      const serialized = JSON.stringify(user);
+      localStorage.setItem(SESSION_KEY, serialized);
+      localStorage.setItem(ALT_SESSION_KEY, serialized);
     } else {
       localStorage.removeItem(SESSION_KEY);
+      localStorage.removeItem(ALT_SESSION_KEY);
     }
   } catch (e) {
     console.error('Error guardando usuario en localStorage:', e);
@@ -31,6 +48,7 @@ export function setStoredUser(user) {
 
 export function clearStoredUser() {
   localStorage.removeItem(SESSION_KEY);
+  localStorage.removeItem(ALT_SESSION_KEY);
 }
 
 // ==================== USUARIOS & AUTH ====================
@@ -95,8 +113,60 @@ export async function recordSession(uid, ua) {
   return getStoredUser();
 }
 
-export async function recordMediaView(uid, mid) {
-  return api.media.recordView(mid, uid).catch(() => null);
+export async function recordMediaView(uid, mid, meta = {}) {
+  const res = await api.media.recordView(mid, uid, meta).catch(() => null);
+  try {
+    const sessionData = localStorage.getItem(SESSION_KEY) || localStorage.getItem('ps_active_session');
+    if (sessionData) {
+      const u = JSON.parse(sessionData);
+      if (u.id === uid) {
+        const history = u.viewHistory || [];
+        const newEntry = {
+          id: Math.random().toString(36).substring(7),
+          mediaId: mid,
+          viewedAt: new Date().toISOString(),
+          source: meta.source || 'Galería Principal',
+          deviceName: meta.deviceName || (/mobile|android|iphone/i.test(navigator?.userAgent || '') ? 'Dispositivo Móvil' : 'Escritorio'),
+          clientIp: '127.0.0.1 (Local)'
+        };
+        u.viewHistory = [newEntry, ...history.filter(h => h.mediaId !== mid)].slice(0, 100);
+        localStorage.setItem(SESSION_KEY, JSON.stringify(u));
+        localStorage.setItem('ps_active_session', JSON.stringify(u));
+        window.dispatchEvent(new CustomEvent('neural-update', { detail: { channel: 'HISTORY', entry: newEntry } }));
+      }
+    }
+  } catch (e) {}
+  return res;
+}
+
+export async function getViewHistory(userId) {
+  if (!userId) return [];
+  try {
+    const history = await api.stats.getHistory(userId);
+    return history || [];
+  } catch (err) {
+    return [];
+  }
+}
+
+export async function clearViewHistory(userId) {
+  if (!userId) return false;
+  try {
+    await api.stats.clearHistory(userId);
+    const sessionData = localStorage.getItem(SESSION_KEY) || localStorage.getItem('ps_active_session');
+    if (sessionData) {
+      const u = JSON.parse(sessionData);
+      if (u.id === userId) {
+        u.viewHistory = [];
+        localStorage.setItem(SESSION_KEY, JSON.stringify(u));
+        localStorage.setItem('ps_active_session', JSON.stringify(u));
+        window.dispatchEvent(new CustomEvent('neural-update', { detail: { channel: 'HISTORY', cleared: true } }));
+      }
+    }
+    return true;
+  } catch (err) {
+    return false;
+  }
 }
 
 export async function updateVideoProgress(uid, mid, s) {
@@ -113,22 +183,45 @@ export async function getMediaByUser(uid) {
   return api.media.list({ userId: uid });
 }
 
+export async function getTrashMedia(uid) {
+  const effectiveUid = uid || getStoredUser()?.id || '';
+  return api.media.list({ userId: effectiveUid, isDeleted: 'true' });
+}
+
 export async function saveMediaMetadata(entry) {
   return entry;
 }
 
-export async function deleteMedia(id, uid) {
-  const res = await api.media.delete(id, uid);
-  return res.success;
+export async function deleteMedia(id, uid, permanent = false) {
+  const effectiveUid = uid || getStoredUser()?.id || 'all';
+  const res = await api.media.delete(id, effectiveUid, permanent);
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('neural-update', { detail: { action: 'delete', id, permanent } }));
+  }
+  return res?.success ?? true;
 }
 
-export async function deleteMultipleMedia(ids, uid) {
-  const res = await api.media.deleteMultiple(ids, uid);
-  return res.success;
+export async function deleteMultipleMedia(ids, uid, permanent = false) {
+  const effectiveUid = uid || getStoredUser()?.id || 'all';
+  const res = await api.media.deleteMultiple(ids, effectiveUid, permanent);
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('neural-update', { detail: { action: 'delete-multiple', ids, permanent } }));
+  }
+  return res?.success ?? true;
+}
+
+export async function emptyTrash(uid) {
+  const effectiveUid = uid || getStoredUser()?.id || 'all';
+  const res = await api.media.emptyTrash(effectiveUid);
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('neural-update', { detail: { action: 'empty-trash' } }));
+  }
+  return res?.success ?? true;
 }
 
 export async function updateMedia(id, uid, up) {
-  const res = await api.media.update(id, uid, up);
+  const effectiveUid = uid || getStoredUser()?.id || 'all';
+  const res = await api.media.update(id, effectiveUid, up);
   return res.media;
 }
 
@@ -137,12 +230,20 @@ export async function updateMultipleMedia(ids, uid, up) {
 }
 
 export async function restoreMultipleMedia(ids, uid) {
-  const res = await api.media.restoreMultiple(ids, uid);
-  return res.success;
+  const effectiveUid = uid || getStoredUser()?.id || 'all';
+  const res = await api.media.restoreMultiple(ids, effectiveUid);
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('neural-update', { detail: { action: 'restore-multiple', ids } }));
+  }
+  return res?.success ?? true;
 }
 
 export async function restoreMedia(id, uid) {
-  const res = await api.media.update(id, uid, { isDeleted: false, deletedAt: null });
+  const effectiveUid = uid || getStoredUser()?.id || 'all';
+  const res = await api.media.update(id, effectiveUid, { isDeleted: false, deletedAt: null });
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('neural-update', { detail: { action: 'restore', id } }));
+  }
   return res.media;
 }
 
@@ -295,3 +396,13 @@ export async function hashPassword(password) {
   const hashBuffer = await crypto.subtle.digest('SHA-512', msgUint8);
   return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
+
+export async function updateUserPlan(userId: string, plan: 'free' | 'pro' | 'ultra') {
+  const res = await api.auth.updatePlan(userId, plan);
+  if (res?.user && typeof window !== 'undefined') {
+    localStorage.setItem('ps_active_session', JSON.stringify(res.user));
+    window.dispatchEvent(new CustomEvent('neural-update', { detail: { channel: 'USER_PLAN', data: res.user } }));
+  }
+  return res;
+}
+

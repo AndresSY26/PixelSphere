@@ -2,6 +2,7 @@
 node_modules/
 backend/node_modules/
 frontend/node_modules/
+package-lock.json
 
 # Build outputs
 frontend/dist/
@@ -10,10 +11,14 @@ out/
 .next/
 *.tsbuildinfo
 
-# Physical Persistence & Uploads
-backend/uploads/*
-!backend/uploads/.gitkeep
+# Temporary & local caches (Zero Server-Disk Architecture)
+data/
+backend/data/
+uploads/
+backend/uploads/
 public/uploads/
+*.tmp
+*.enc.tmp
 
 # Environment Variables & Secrets
 .env
@@ -21,6 +26,7 @@ public/uploads/
 backend/.env
 frontend/.env
 *.local
+*.env
 
 # Logs
 *.log

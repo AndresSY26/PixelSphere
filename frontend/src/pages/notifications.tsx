@@ -217,7 +217,7 @@ export default function NotificationsPage() {
               <div className="flex-1 text-center md:text-left">
                 <h4 className="text-xl font-bold text-white mb-2 font-headline">Auditoría de Sistemas</h4>
                 <p className="text-sm text-muted-foreground leading-relaxed">
-                  Este historial refleja cada interacción física con tu base de datos y archivos. La persistencia está garantizada mediante escritura directa en JSON con encriptación SHA-512. Las alertas de logros se orquestan automáticamente al detectar cambios de estado en tu inventario.
+                  Este historial refleja cada interacción directa con tu base de datos y archivos. La persistencia está garantizada mediante base de datos relacional PostgreSQL con cifrado Zero-Knowledge AES-256-GCM y almacenamiento en la nube. Las alertas de logros se orquestan automáticamente al detectar cambios de estado en tu inventario.
                 </p>
               </div>
             </div>

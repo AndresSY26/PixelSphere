@@ -31,7 +31,7 @@ export default function NeuralVideoPlayer({ src, mediaId, userId, initialPositio
   const containerRef = useRef<HTMLDivElement>(null);
   
   const [currentSrc, setCurrentSrc] = useState<string>(() => {
-    return mediaId && !src.startsWith('/api/') ? `/api/media/${mediaId}/stream` : src;
+    return (mediaId ? `/api/media/${mediaId}/stream` : src) || '';
   });
 
   const [isPlaying, setIsPlaying] = useState(false);
@@ -49,20 +49,28 @@ export default function NeuralVideoPlayer({ src, mediaId, userId, initialPositio
   const [hasResumed, setHasResumed] = useState(false);
 
   useEffect(() => {
-    if (mediaId && !src.startsWith('/api/')) {
-      setCurrentSrc(`/api/media/${mediaId}/stream`);
-    } else {
-      setCurrentSrc(src);
-    }
+    const nextSrc = (mediaId ? `/api/media/${mediaId}/stream` : src) || '';
+    setCurrentSrc(nextSrc);
     setPlaybackError(null);
+    setIsBuffering(false);
+    if (videoRef.current) {
+      videoRef.current.load();
+    }
   }, [src, mediaId]);
 
   const handleVideoError = () => {
-    if (currentSrc !== src) {
-      console.warn("[NeuralPlayer] Fallback de endpoint de streaming a ruta estática:", src);
-      setCurrentSrc(src);
+    const alternateSrc = mediaId && currentSrc !== `/api/media/${mediaId}/stream` 
+      ? `/api/media/${mediaId}/stream` 
+      : (src && currentSrc !== src ? src : null);
+
+    if (alternateSrc && alternateSrc !== currentSrc) {
+      console.warn("[NeuralPlayer] Reintentando reproducción con ruta alternativa:", alternateSrc);
+      setCurrentSrc(alternateSrc);
+      setTimeout(() => {
+        if (videoRef.current) videoRef.current.load();
+      }, 50);
     } else {
-      console.error("[NeuralPlayer] Error al cargar video:", currentSrc);
+      console.warn("[NeuralPlayer] Aviso de reproducción:", currentSrc);
       setPlaybackError("El formato del video requiere transcodificación o no es compatible con este navegador.");
     }
   };
@@ -98,9 +106,16 @@ export default function NeuralVideoPlayer({ src, mediaId, userId, initialPositio
 
     try {
       if (videoRef.current.paused) {
-        const playPromise = videoRef.current.play();
-        if (playPromise !== undefined) {
-          await playPromise;
+        try {
+          await videoRef.current.play();
+        } catch (err: any) {
+          if (err.name === 'NotAllowedError') {
+            videoRef.current.muted = true;
+            setIsMuted(true);
+            await videoRef.current.play();
+          } else {
+            throw err;
+          }
         }
         setIsPlaying(true);
       } else {
@@ -110,7 +125,7 @@ export default function NeuralVideoPlayer({ src, mediaId, userId, initialPositio
       setShowControls(true);
     } catch (error: any) {
       if (error.name !== 'AbortError') {
-        console.error("Error de reproducción neural:", error);
+        console.warn("Aviso de reproducción:", error.message);
       }
     }
   }, []);
@@ -217,9 +232,15 @@ export default function NeuralVideoPlayer({ src, mediaId, userId, initialPositio
         )}
         onTimeUpdate={handleTimeUpdate}
         onLoadedMetadata={handleLoadedMetadata}
+        onDurationChange={() => { if (videoRef.current?.duration) setDuration(videoRef.current.duration); }}
+        onLoadedData={() => { if (videoRef.current?.duration) setDuration(videoRef.current.duration); setIsBuffering(false); }}
         onWaiting={() => setIsBuffering(true)}
         onPlaying={() => { setIsBuffering(false); setPlaybackError(null); }}
-        onCanPlay={() => { setIsBuffering(false); setPlaybackError(null); }}
+        onCanPlay={() => { 
+          setIsBuffering(false); 
+          setPlaybackError(null); 
+          if (videoRef.current?.duration) setDuration(videoRef.current.duration);
+        }}
         onSeeked={() => setIsBuffering(false)}
         onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
@@ -354,8 +375,14 @@ export default function NeuralVideoPlayer({ src, mediaId, userId, initialPositio
       </div>
 
       {!isPlaying && !isBuffering && (
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20">
-          <div className="h-24 w-24 bg-primary/20 backdrop-blur-2xl rounded-full border border-primary/30 flex items-center justify-center animate-zoom-in shadow-[0_0_50px_rgba(115,115,240,0.3)]">
+        <div 
+          className="absolute inset-0 flex items-center justify-center z-20 cursor-pointer pointer-events-auto"
+          onClick={(e) => {
+            e.stopPropagation();
+            togglePlay();
+          }}
+        >
+          <div className="h-24 w-24 bg-primary/20 backdrop-blur-2xl rounded-full border border-primary/30 flex items-center justify-center animate-zoom-in shadow-[0_0_50px_rgba(115,115,240,0.3)] hover:scale-110 transition-transform">
             <Play className="h-12 w-12 text-white fill-white ml-2" />
           </div>
         </div>

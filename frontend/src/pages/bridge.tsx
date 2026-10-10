@@ -71,14 +71,14 @@ const PROVIDERS: CloudProvider[] = [
     name: 'Google Photos', 
     icon: Globe, 
     color: 'text-blue-400', 
-    description: 'Importa tus fotos de Google directamente a tu servidor privado.' 
+    description: 'Importa tus fotos de Google directamente a tu bóveda cifrada.' 
   },
   { 
     id: 'icloud', 
     name: 'Apple iCloud', 
     icon: Cloud, 
     color: 'text-gray-400', 
-    description: 'Trae tus recuerdos de iPhone a tu infraestructura física.' 
+    description: 'Trae tus recuerdos de iPhone a tu almacenamiento seguro en la nube.' 
   },
   { 
     id: 'dropbox', 
@@ -250,7 +250,7 @@ export default function CloudBridgePage() {
     await unlockAchievement(user.id, 'migration_master');
     toast({ 
       title: "Importación Exitosa", 
-      description: `${successCount} fotos ahora están guardadas físicamente en tu servidor.` 
+      description: `${successCount} fotos ahora están respaldadas de forma segura en la base de datos.` 
     });
     setIsImporting(false);
     setShowPicker(false);
@@ -454,7 +454,7 @@ export default function CloudBridgePage() {
                     <div className="absolute inset-0 bg-primary/20 blur-3xl rounded-full" />
                   </div>
                   <div className="text-center space-y-4 w-full max-w-sm">
-                    <h3 className="text-xl font-bold text-white">Guardando archivos en tu servidor...</h3>
+                    <h3 className="text-xl font-bold text-white">Sincronizando y respaldando archivos...</h3>
                     <Progress value={importProgress} className="h-2 bg-white/5" />
                     <p className="text-[10px] font-black uppercase tracking-[0.3em] text-muted-foreground">{importProgress}% Completado</p>
                   </div>

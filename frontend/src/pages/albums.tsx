@@ -19,10 +19,10 @@ import {
   getFrequentContacts,
   addMultipleToAlbum,
   removeMultipleFromAlbum,
-  updateUserFilterPreferences
+  updateUserFilterPreferences,
+  recordMediaView
 } from '@/lib/storage';
 import { Album, Media, User } from '@/lib/types';
-import { DatabaseInspectorDialog } from '@/components/database-inspector-dialog';
 import { 
   FolderPlus, 
   Plus, 
@@ -467,6 +467,12 @@ export default function AlbumsPage() {
   };
 
   const openViewer = useCallback((item: Media) => {
+    if (user) {
+      recordMediaView(user.id, item.id, { 
+        source: currentAlbum ? `Álbum: ${currentAlbum.title}` : 'Álbumes',
+        deviceName: /mobile|android|iphone/i.test(navigator?.userAgent || '') ? 'Dispositivo Móvil' : 'Escritorio'
+      });
+    }
     if (item.isAdultContent) {
       setAdultToConfirm(item);
     } else {
@@ -475,7 +481,7 @@ export default function AlbumsPage() {
       setTagSuggestions([]);
       setLinkNavParentId(null);
     }
-  }, []);
+  }, [user, currentAlbum]);
 
   const filteredSubAlbums = useMemo(() => {
     let result = allAlbums.filter(a => (a.parentId || null) === (currentAlbumId || null));
@@ -704,7 +710,6 @@ export default function AlbumsPage() {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <DatabaseInspectorDialog />
             {currentAlbumId && (
               <Button onClick={() => setIsMediaSelectorOpen(true)} variant="outline" className="border-accent/30 text-accent hover:bg-accent/10 rounded-xl h-12 px-6">
                 <PlusCircle className="mr-2 h-5 w-5" /> Añadir Activos
@@ -867,6 +872,12 @@ export default function AlbumsPage() {
             <Button 
               className="flex-1 bg-accent text-accent-foreground font-bold rounded-xl h-12"
               onClick={() => {
+                if (user && adultToConfirm) {
+                  recordMediaView(user.id, adultToConfirm.id, { 
+                    source: currentAlbum ? `Álbum: ${currentAlbum.title}` : 'Álbumes',
+                    deviceName: /mobile|android|iphone/i.test(navigator?.userAgent || '') ? 'Dispositivo Móvil' : 'Escritorio'
+                  });
+                }
                 setSelectedMedia(adultToConfirm);
                 setAdultToConfirm(null);
                 setTagInput('');
@@ -978,7 +989,7 @@ export default function AlbumsPage() {
             <div className="flex flex-col lg:flex-row h-full overflow-hidden">
               <div className="relative h-[50vh] sm:h-[60vh] lg:h-full lg:flex-1 bg-black flex items-center justify-center overflow-hidden shrink-0">
                 <Button variant="ghost" size="icon" className="absolute top-4 left-4 z-50 rounded-full bg-black/40 text-white lg:hidden" onClick={() => setSelectedMedia(null)}><X className="h-6 w-6" /></Button>
-                {selectedMedia.type === 'video' ? <NeuralVideoPlayer src={selectedMedia.url} className="w-full h-full" /> : <img src={selectedMedia.url} className="w-full h-full object-contain" alt="" />}
+                {selectedMedia.type === 'video' ? <NeuralVideoPlayer key={selectedMedia.id} src={selectedMedia.url} mediaId={selectedMedia.id} className="w-full h-full" /> : <img src={selectedMedia.url} className="w-full h-full object-contain" alt="" />}
               </div>
               <div className="flex-1 lg:w-[400px] bg-card border-t lg:border-t-0 lg:border-l border-white/10 flex flex-col overflow-hidden rounded-t-[2.5rem] lg:rounded-none">
                 <ScrollArea className="flex-1">
@@ -1077,10 +1088,11 @@ export default function AlbumsPage() {
                       toast({ title: "Vínculo Removido", description: "El activo ha sido retirado del álbum." });
                     }}><MinusCircle className="h-5 w-5" /></Button></div>
                     <Button variant="outline" className="w-full h-10 rounded-xl border-white/10 text-red-400 text-[10px] uppercase font-black tracking-widest hover:bg-red-500/10 transition-all" onClick={async () => {
-                      if (!user) return;
-                      await deleteMedia(selectedMedia.id, user.id);
+                      const activeUid = user?.id || getStoredUser()?.id || 'all';
+                      await deleteMedia(selectedMedia.id, activeUid);
+                      setMedia(prev => prev.filter(m => m.id !== selectedMedia.id));
                       setSelectedMedia(null);
-                      toast({ title: "Movido a Papelera", description: "Tienes 30 días para recuperarlo." });
+                      toast({ title: "Movido a Papelera", description: "Tienes 30 días para recuperarlo antes de su purga definitiva." });
                     }}><Trash2 className="mr-2 h-3.5 w-3.5" /> Eliminar Activo</Button>
                 </div>
               </div>
@@ -1213,9 +1225,14 @@ const MediaCardItem = memo(({ item, index, onClick }: { item: Media, index: numb
       {isInView && (
         <div className="w-full h-full relative">
           <img 
-            src={item.thumbnailUrl} 
+            src={item.thumbnailUrl || item.url} 
             alt={item.filename}
             onLoad={() => setIsLoaded(true)}
+            onError={(e) => {
+              if (item.url && e.currentTarget.src !== item.url) {
+                e.currentTarget.src = item.url;
+              }
+            }}
             className={cn(
               "w-full h-full object-cover transition-all duration-700 group-hover:scale-110", 
               !isLoaded && "opacity-0",
