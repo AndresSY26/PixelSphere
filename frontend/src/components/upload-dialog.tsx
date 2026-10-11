@@ -382,7 +382,7 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
                   'Authorization': `Bearer ${token}`
                 },
                 body: JSON.stringify({
-                  userId: user.id,
+                  userId: user?.id || (typeof window !== 'undefined' && localStorage.getItem('ps_active_session') ? JSON.parse(localStorage.getItem('ps_active_session') || '{}')?.id : null) || 'default_user',
                   token,
                   items: [{
                     id: it.driveItem!.id,
@@ -449,38 +449,47 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
           const detectedContentType = isVideoFile 
             ? (file.type && file.type.startsWith('video/') ? file.type : 'video/mp4') 
             : (file.type || 'application/octet-stream');
-          const chunk = file.slice(start, end, detectedContentType);
 
-          const formData = new FormData();
-          // Metadatos primero para que el parser de streaming los reciba antes del binario
           const activeUserId = user?.id || (typeof window !== 'undefined' && localStorage.getItem('ps_active_session') ? JSON.parse(localStorage.getItem('ps_active_session') || '{}')?.id : null) || 'default_user';
-          formData.append('userId', activeUserId);
-          formData.append('filename', file.name);
-          formData.append('fileId', fileId);
-          formData.append('chunkIndex', chunkIndex.toString());
-          formData.append('totalChunks', totalChunks.toString());
-          formData.append('isAdult', item.isAdultContent.toString());
-          formData.append('filesize', file.size.toString());
-          formData.append('contentType', detectedContentType);
-          
-          if (currentCoords) {
-            formData.append('lat', currentCoords.lat.toString());
-            formData.append('lng', currentCoords.lng.toString());
-          }
-          if (item.cameraSource) formData.append('cameraSource', item.cameraSource);
-          if (item.thumbnailB64) {
-            formData.append('thumbnailB64', item.thumbnailB64);
-          }
-          
-          // El archivo binario se añade al final
-          formData.append('chunk', chunk, `${file.name}.part${chunkIndex}`);
+
+          const createChunkFormData = () => {
+            const fd = new FormData();
+            fd.append('userId', activeUserId);
+            fd.append('filename', file.name);
+            fd.append('fileId', fileId);
+            fd.append('chunkIndex', chunkIndex.toString());
+            fd.append('totalChunks', totalChunks.toString());
+            fd.append('isAdult', item.isAdultContent.toString());
+            fd.append('filesize', file.size.toString());
+            fd.append('contentType', detectedContentType);
+
+            if (currentCoords) {
+              fd.append('lat', currentCoords.lat.toString());
+              fd.append('lng', currentCoords.lng.toString());
+            }
+            if (item.cameraSource) fd.append('cameraSource', item.cameraSource);
+            if (item.thumbnailB64 && chunkIndex === 0) {
+              fd.append('thumbnailB64', item.thumbnailB64);
+            }
+
+            const chunkBlob = file.slice(start, end, detectedContentType);
+            fd.append('chunk', chunkBlob, `${file.name}.part${chunkIndex}`);
+            return fd;
+          };
 
           let response: Response | null = null;
           let lastError: any = null;
 
           for (let attempt = 0; attempt < 3; attempt++) {
             try {
-              response = await fetch('/api/upload', { method: 'POST', body: formData });
+              const currentFormData = createChunkFormData();
+              response = await fetch('/api/upload', { 
+                method: 'POST', 
+                body: currentFormData,
+                headers: {
+                  'Accept': 'application/json'
+                }
+              });
               if (response.ok) break;
               const errData = await response.json().catch(() => ({}));
               lastError = new Error(errData.error || `Error del servidor HTTP ${response.status}`);
@@ -511,15 +520,17 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
       } catch (error: any) {
         console.error("Error al procesar subida de archivo multimedia:", error);
         setUploadQueue(prev => prev.map(f => f.id === item.id ? { ...f, status: 'error' } : f));
-        toast({ variant: 'destructive', title: 'Error de Ingesta', description: error.message });
+        toast({ variant: 'destructive', title: 'Error de Ingesta', description: error?.message || 'Error en la subida' });
       }
     }
 
+    const currentUserId = user?.id || (typeof window !== 'undefined' && localStorage.getItem('ps_active_session') ? JSON.parse(localStorage.getItem('ps_active_session') || '{}')?.id : null) || 'default_user';
+
     if (completedCount > 0) {
-      await unlockAchievement(user.id, 'first_upload');
+      await unlockAchievement(currentUserId, 'first_upload');
       toast({ title: "Ingesta Completa", description: `${completedCount} archivos geolocalizados.` });
       window.dispatchEvent(new CustomEvent('neural-update', { 
-        detail: { channel: 'MEDIA', data: { userId: user.id } } 
+        detail: { channel: 'MEDIA', data: { userId: currentUserId } } 
       }));
     }
     setIsUploading(false);
@@ -527,7 +538,7 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
       setTimeout(() => { 
         onUploadSuccess?.(); 
         window.dispatchEvent(new CustomEvent('neural-update', { 
-          detail: { channel: 'MEDIA', data: { userId: user.id } } 
+          detail: { channel: 'MEDIA', data: { userId: currentUserId } } 
         }));
         handleClose(); 
       }, 800);

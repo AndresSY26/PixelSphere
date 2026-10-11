@@ -30,10 +30,10 @@ async function startServer() {
 
   // Permissive CORS for dev and preview
   app.use(cors({
-    origin: true,
+    origin: (origin, callback) => callback(null, true),
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-    allowedHeaders: ['*']
+    allowedHeaders: ['Content-Type', 'Authorization', 'Range', 'X-Requested-With', 'Accept', 'Origin']
   }));
 
   // Parsers
@@ -139,6 +139,11 @@ async function startServer() {
 
   // REST API Routes
   app.use('/api', apiRouter);
+
+  // 404 Handler for /api: Nunca devolver HTML de Vite para peticiones de API
+  app.all('/api/*', (req, res) => {
+    res.status(404).json({ error: `Ruta de API no encontrada: ${req.method} ${req.path}` });
+  });
 
   // Global Error Handler for API
   app.use(errorHandler);

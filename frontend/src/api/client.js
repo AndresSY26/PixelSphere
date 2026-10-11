@@ -22,13 +22,23 @@ async function request(endpoint, options = {}) {
 
   try {
     const response = await fetch(url, config);
+    const contentType = response.headers.get('content-type') || '';
+
+    if (!contentType.includes('application/json')) {
+      const rawText = await response.text().catch(() => '');
+      if (rawText.includes('<!doctype') || rawText.includes('<html')) {
+        throw new Error(`El servidor devolvió una página HTML en lugar de datos JSON para ${endpoint}. El servicio puede estar reiniciando.`);
+      }
+      throw new Error(`Respuesta no esperada del servidor (${response.status}): ${rawText.slice(0, 100)}`);
+    }
+
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       throw new Error(errorData.error || `Error en la solicitud: ${response.statusText}`);
     }
     return await response.json();
   } catch (error) {
-    console.error(`[API Client Error] [${options.method || 'GET'}] ${url}:`, error);
+    console.error(`[API Client Error] [${options.method || 'GET'}] ${url}:`, error.message || error);
     throw error;
   }
 }

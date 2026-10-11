@@ -33,7 +33,7 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Range']
+  allowedHeaders: ['Content-Type', 'Authorization', 'Range', 'X-Requested-With', 'Accept', 'Origin']
 }));
 
 // Parsers para JSON y formularios
@@ -128,6 +128,11 @@ app.use('/uploads', async (req, res) => {
 
 // Rutas de API REST
 app.use('/api', apiRouter);
+
+// Manejador 404 para rutas API no coincidentes
+app.all('/api/*', (req, res) => {
+  res.status(404).json({ error: `Ruta API no encontrada: ${req.method} ${req.path}` });
+});
 
 // Ruta de comprobación de salud del servidor
 app.get('/health', (req, res) => {

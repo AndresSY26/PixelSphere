@@ -387,7 +387,11 @@ export async function handleChunkedUpload(req, res) {
             await new Promise((resolve) => writeStream.once('drain', resolve));
           }
         }
-        await new Promise((resolve) => writeStream.end(resolve));
+        await new Promise((resolve, reject) => {
+          writeStream.on('finish', resolve);
+          writeStream.on('error', reject);
+          writeStream.end();
+        });
 
         // Limpiar el directorio temporal
         await fs.promises.rm(tempChunksDir, { recursive: true, force: true }).catch(() => {});
