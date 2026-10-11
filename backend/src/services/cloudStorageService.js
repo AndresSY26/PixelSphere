@@ -34,9 +34,14 @@ for (const p of possiblePaths) {
 
 if (!firebaseConfig) {
   firebaseConfig = {
-    projectId: "gen-lang-client-0029347446",
-    storageBucket: "gen-lang-client-0029347446.firebasestorage.app"
+    projectId: process.env.FIREBASE_PROJECT_ID || "gen-lang-client-0029347446",
+    storageBucket: process.env.FIREBASE_STORAGE_BUCKET || "gen-lang-client-0029347446.firebasestorage.app",
+    apiKey: process.env.FIREBASE_API_KEY || ""
   };
+} else {
+  if (process.env.FIREBASE_PROJECT_ID) firebaseConfig.projectId = process.env.FIREBASE_PROJECT_ID;
+  if (process.env.FIREBASE_STORAGE_BUCKET) firebaseConfig.storageBucket = process.env.FIREBASE_STORAGE_BUCKET;
+  if (process.env.FIREBASE_API_KEY) firebaseConfig.apiKey = process.env.FIREBASE_API_KEY;
 }
 
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();

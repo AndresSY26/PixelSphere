@@ -64,7 +64,7 @@ PixelSphere/
 ├── package.json                       # Orquestador del monorepo y dependencias compartidas
 ├── metadata.json                      # Metadatos del applet y capacidades del sistema
 ├── .env.example                       # Plantilla de variables de entorno (Neon PostgreSQL, puertos)
-├── firebase-applet-config.json        # Configuración de Firebase Cloud Storage y Auth
+├── firebase-applet-config.example.json# Plantilla de configuración de Firebase (sin secretos)
 │
 ├── backend/                           # API REST y Servicios de Backend (Node.js ESM)
 │   ├── package.json                   # Dependencias de backend (@google/genai, pg, otplib, multer, sharp)
