@@ -108,6 +108,68 @@ export async function isGooglePayReady(config: GooglePayConfig): Promise<boolean
   }
 }
 
+export function getGooglePaymentDataRequest(
+  config: GooglePayConfig,
+  amount: number,
+  currency: string = 'USD'
+) {
+  const merchantInfo: Record<string, string> = {
+    merchantName: config.merchantInfo?.merchantName || 'PixelSphere Cloud Storage'
+  };
+
+  // Solo incluir merchantId numérico si estamos en PRODUCCIÓN
+  if (config.environment === 'PRODUCTION' && config.merchantInfo?.merchantId) {
+    merchantInfo.merchantId = config.merchantInfo.merchantId;
+  }
+
+  return {
+    apiVersion: 2,
+    apiVersionMinor: 0,
+    allowedPaymentMethods: [getCardPaymentMethodWithTokenization(config)],
+    transactionInfo: {
+      totalPriceStatus: 'FINAL',
+      totalPrice: amount.toFixed(2),
+      currencyCode: currency,
+      countryCode: 'US'
+    },
+    merchantInfo
+  };
+}
+
+export function getPaymentsClient(config: GooglePayConfig) {
+  if (typeof window === 'undefined' || !window.google?.payments?.api) {
+    return null;
+  }
+  return new window.google.payments.api.PaymentsClient({
+    environment: config.environment || 'TEST'
+  });
+}
+
+export function renderGooglePayButton(
+  container: HTMLElement,
+  config: GooglePayConfig,
+  onClick: (event: any) => void
+): boolean {
+  if (typeof window === 'undefined' || !window.google?.payments?.api) return false;
+  try {
+    const paymentsClient = getPaymentsClient(config);
+    if (!paymentsClient) return false;
+
+    container.innerHTML = '';
+    const button = paymentsClient.createButton({
+      buttonColor: 'default',
+      buttonType: 'pay',
+      buttonSizeMode: 'fill',
+      onClick
+    });
+    container.appendChild(button);
+    return true;
+  } catch (err) {
+    console.warn('[GooglePay] Error al renderizar botón oficial de Google Pay:', err);
+    return false;
+  }
+}
+
 export async function requestGooglePayPayment(
   config: GooglePayConfig,
   amount: number,
@@ -119,25 +181,12 @@ export async function requestGooglePayPayment(
     throw new Error('Google Pay SDK no disponible en este navegador');
   }
 
-  const paymentsClient = new window.google.payments.api.PaymentsClient({
-    environment: config.environment || 'TEST'
-  });
+  const paymentsClient = getPaymentsClient(config);
+  if (!paymentsClient) {
+    throw new Error('No se pudo inicializar PaymentsClient de Google Pay');
+  }
 
-  const paymentDataRequest = {
-    apiVersion: 2,
-    apiVersionMinor: 0,
-    allowedPaymentMethods: [getCardPaymentMethodWithTokenization(config)],
-    transactionInfo: {
-      totalPriceStatus: 'FINAL',
-      totalPrice: amount.toFixed(2),
-      currencyCode: currency,
-      countryCode: 'US'
-    },
-    merchantInfo: {
-      merchantId: config.merchantInfo?.merchantId || '12345678901234567890',
-      merchantName: config.merchantInfo?.merchantName || 'PixelSphere Cloud Storage'
-    }
-  };
+  const paymentDataRequest = getGooglePaymentDataRequest(config, amount, currency);
 
   try {
     const paymentData = await paymentsClient.loadPaymentData(paymentDataRequest);
@@ -145,6 +194,12 @@ export async function requestGooglePayPayment(
   } catch (err: any) {
     if (err.statusCode === 'CANCELED') {
       throw new Error('Pago cancelado por el usuario');
+    }
+    const msg = String(err.message || err.statusMessage || err);
+    if (msg.includes('OR_BIBED') || msg.includes('popup') || msg.includes('window')) {
+      const enhancedErr: any = new Error('Google Pay no pudo cargar la ventana de pago [OR_BIBED_15].');
+      enhancedErr.code = 'OR_BIBED_15';
+      throw enhancedErr;
     }
     throw err;
   }

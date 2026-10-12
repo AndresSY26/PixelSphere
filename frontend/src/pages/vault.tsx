@@ -401,11 +401,24 @@ export default function PrivateFolderPage() {
   };
 
   const handleSingleAddToAlbum = async (albumId: string) => {
-    if (!user || !selectedMedia) return;
+    if (!selectedMedia) return;
+    const effectiveUid = user?.id || (typeof window !== 'undefined' && localStorage.getItem('ps_active_session') ? JSON.parse(localStorage.getItem('ps_active_session') || '{}')?.id : null);
     try { 
-      await addMultipleToAlbum(albumId, user.id, [selectedMedia.id]); 
+      await addMultipleToAlbum(albumId, effectiveUid, [selectedMedia.id]); 
+      setAlbums(prev => prev.map(a => {
+        if (a.id === albumId) {
+          const curIds = Array.isArray(a.mediaIds) ? a.mediaIds : [];
+          return { ...a, mediaIds: Array.from(new Set([...curIds, selectedMedia.id])) };
+        }
+        return a;
+      }));
+      setSelectedMedia(prev => prev ? {
+        ...prev,
+        albumId,
+        albumIds: Array.from(new Set([...(prev.albumIds || (prev.albumId ? [prev.albumId] : [])), albumId]))
+      } : null);
       const album = albums.find(a => a.id === albumId);
-      toast({ title: "Vínculo Creado", description: `Añadido a ${album?.title}` }); 
+      toast({ title: "Vínculo Creado", description: `Añadido a ${album?.title || 'la colección'}` }); 
     } catch (e) {
       console.error("Error al añadir medio a álbum en bóveda:", e);
       toast({ title: "Error", variant: "destructive" });
@@ -413,11 +426,24 @@ export default function PrivateFolderPage() {
   };
 
   const handleRemoveFromAlbum = async (albumId: string) => {
-    if (!user || !selectedMedia) return;
+    if (!selectedMedia) return;
+    const effectiveUid = user?.id || (typeof window !== 'undefined' && localStorage.getItem('ps_active_session') ? JSON.parse(localStorage.getItem('ps_active_session') || '{}')?.id : null);
     try {
-      await removeMultipleFromAlbum(albumId, user.id, [selectedMedia.id]);
+      await removeMultipleFromAlbum(albumId, effectiveUid, [selectedMedia.id]);
+      setAlbums(prev => prev.map(a => {
+        if (a.id === albumId) {
+          const curIds = Array.isArray(a.mediaIds) ? a.mediaIds : [];
+          return { ...a, mediaIds: curIds.filter(id => id !== selectedMedia.id) };
+        }
+        return a;
+      }));
+      setSelectedMedia(prev => prev ? {
+        ...prev,
+        albumId: prev.albumId === albumId ? undefined : prev.albumId,
+        albumIds: (prev.albumIds || []).filter(id => id !== albumId)
+      } : null);
       const album = albums.find(a => a.id === albumId);
-      toast({ title: "Vínculo Removido", description: `Retirado de ${album?.title}` });
+      toast({ title: "Vínculo Removido", description: `Retirado de ${album?.title || 'la colección'}` });
     } catch (e) {
       console.error("Error al remover medio de álbum en bóveda:", e);
       toast({ title: "Error", variant: "destructive" });

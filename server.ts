@@ -23,7 +23,12 @@ async function startServer() {
   await ensureDirectories();
 
   const app = express();
-  const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+  // El entorno de AI Studio requiere que la app escuche en el puerto 3000.
+  // El puerto 8080 está reservado para el proxy inverso interno Nginx, por lo que nunca debe usarse.
+  const portArgIndex = process.argv.indexOf('--port');
+  const cliPort = portArgIndex !== -1 && process.argv[portArgIndex + 1] ? parseInt(process.argv[portArgIndex + 1], 10) : null;
+  const envPort = process.env.PORT ? parseInt(process.env.PORT, 10) : null;
+  const PORT = (cliPort && cliPort !== 8080) ? cliPort : (envPort && envPort !== 8080 ? envPort : 3000);
 
   // Compresión GZIP de alta eficiencia para reducir consumo de red y costos de egress
   app.use(compression());
@@ -199,6 +204,7 @@ async function startServer() {
         middlewareMode: true,
         host: '0.0.0.0',
         allowedHosts: true,
+        hmr: false,
       },
       appType: 'spa',
     });

@@ -441,7 +441,46 @@ export default function GalleryPage() {
                     <Popover onOpenChange={(o) => !o && setLinkNavParentId(null)}>
                       <PopoverTrigger asChild><Button variant="outline" className="h-12 border-white/10 text-white rounded-xl font-bold bg-white/5"><PlusCircle className="mr-2 h-4 w-4 text-primary" /> Vincular</Button></PopoverTrigger>
                       <PopoverContent align="end" className="w-80 bg-card border-white/10 shadow-2xl p-4">
-                        <AlbumBrowser allAlbums={albums} selectedMedia={selectedMedia} linkNavParentId={linkNavParentId} setLinkNavParentId={setLinkNavParentId} onSelect={async (aid) => { if(user) { await addMultipleToAlbum(aid, user.id, [selectedMedia.id]); toast({ title: "Vínculo Creado" }); } }} onRemove={async (aid) => { if(user) { await removeMultipleFromAlbum(aid, user.id, [selectedMedia.id]); toast({ title: "Vínculo Removido" }); } }} />
+                        <AlbumBrowser 
+                          allAlbums={albums} 
+                          selectedMedia={selectedMedia} 
+                          linkNavParentId={linkNavParentId} 
+                          setLinkNavParentId={setLinkNavParentId} 
+                          onSelect={async (aid) => { 
+                            const effectiveUid = user?.id || (typeof window !== 'undefined' && localStorage.getItem('ps_active_session') ? JSON.parse(localStorage.getItem('ps_active_session') || '{}')?.id : null);
+                            await addMultipleToAlbum(aid, effectiveUid, [selectedMedia.id]); 
+                            setAlbums(prev => prev.map(a => {
+                              if (a.id === aid) {
+                                const curIds = Array.isArray(a.mediaIds) ? a.mediaIds : [];
+                                return { ...a, mediaIds: Array.from(new Set([...curIds, selectedMedia.id])) };
+                              }
+                              return a;
+                            }));
+                            setSelectedMedia(prev => prev ? {
+                              ...prev,
+                              albumId: aid,
+                              albumIds: Array.from(new Set([...(prev.albumIds || (prev.albumId ? [prev.albumId] : [])), aid]))
+                            } : null);
+                            toast({ title: "Vínculo Creado", description: "Elemento añadido a la colección." }); 
+                          }} 
+                          onRemove={async (aid) => { 
+                            const effectiveUid = user?.id || (typeof window !== 'undefined' && localStorage.getItem('ps_active_session') ? JSON.parse(localStorage.getItem('ps_active_session') || '{}')?.id : null);
+                            await removeMultipleFromAlbum(aid, effectiveUid, [selectedMedia.id]); 
+                            setAlbums(prev => prev.map(a => {
+                              if (a.id === aid) {
+                                const curIds = Array.isArray(a.mediaIds) ? a.mediaIds : [];
+                                return { ...a, mediaIds: curIds.filter(id => id !== selectedMedia.id) };
+                              }
+                              return a;
+                            }));
+                            setSelectedMedia(prev => prev ? {
+                              ...prev,
+                              albumId: prev.albumId === aid ? undefined : prev.albumId,
+                              albumIds: (prev.albumIds || []).filter(id => id !== aid)
+                            } : null);
+                            toast({ title: "Vínculo Removido", description: "Elemento retirado de la colección." }); 
+                          }} 
+                        />
                       </PopoverContent>
                     </Popover>
                   </div>

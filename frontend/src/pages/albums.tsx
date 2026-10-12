@@ -274,11 +274,12 @@ export default function AlbumsPage() {
   };
 
   const handleBatchAddToAlbum = async () => {
-    if (!user || !currentAlbumId || selectedGalleryIds.size === 0) return;
+    const activeUid = user?.id || (typeof window !== 'undefined' && localStorage.getItem('ps_active_session') ? JSON.parse(localStorage.getItem('ps_active_session') || '{}')?.id : null);
+    if (!activeUid || !currentAlbumId || selectedGalleryIds.size === 0) return;
     setIsAddingMedia(true);
     const idsToAdd = Array.from(selectedGalleryIds);
     try {
-      await addMultipleToAlbum(currentAlbumId, user.id, idsToAdd);
+      await addMultipleToAlbum(currentAlbumId, activeUid, idsToAdd);
       
       // Actualización optimista de estado local
       setAllAlbums(prev => prev.map(a => {
@@ -312,9 +313,10 @@ export default function AlbumsPage() {
   };
 
   const handleSingleAddToAlbum = async (albumId: string) => {
-    if (!user || !selectedMedia) return;
+    const activeUid = user?.id || (typeof window !== 'undefined' && localStorage.getItem('ps_active_session') ? JSON.parse(localStorage.getItem('ps_active_session') || '{}')?.id : null);
+    if (!activeUid || !selectedMedia) return;
     try { 
-      await addMultipleToAlbum(albumId, user.id, [selectedMedia.id]); 
+      await addMultipleToAlbum(albumId, activeUid, [selectedMedia.id]); 
       const album = allAlbums.find(a => a.id === albumId);
 
       setAllAlbums(prev => prev.map(a => {
@@ -341,9 +343,10 @@ export default function AlbumsPage() {
   };
 
   const handleRemoveFromAlbum = async (albumId: string) => {
-    if (!user || !selectedMedia) return;
+    const activeUid = user?.id || (typeof window !== 'undefined' && localStorage.getItem('ps_active_session') ? JSON.parse(localStorage.getItem('ps_active_session') || '{}')?.id : null);
+    if (!activeUid || !selectedMedia) return;
     try { 
-      await removeMultipleFromAlbum(albumId, user.id, [selectedMedia.id]); 
+      await removeMultipleFromAlbum(albumId, activeUid, [selectedMedia.id]); 
       const album = allAlbums.find(a => a.id === albumId);
 
       setAllAlbums(prev => prev.map(a => {

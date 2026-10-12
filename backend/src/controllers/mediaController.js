@@ -310,7 +310,8 @@ export async function handleChunkedUpload(req, res) {
       lat,
       lng,
       cameraSource,
-      thumbnailB64
+      thumbnailB64,
+      albumId
     } = req.body;
 
     if (!userId || !filename || !chunkFile) {
@@ -513,6 +514,8 @@ export async function handleChunkedUpload(req, res) {
       tags: [detectedType, 'upload', detectedType === 'video' ? 'webm' : 'webp'],
       isPrivate: false,
       isAdultContent,
+      albumId: albumId || null,
+      albumIds: albumId ? [albumId] : [],
       latitude: lat ? parseFloat(lat) : undefined,
       longitude: lng ? parseFloat(lng) : undefined,
       cameraSource: cameraSource || undefined,
@@ -538,6 +541,23 @@ export async function handleChunkedUpload(req, res) {
     }
 
     await saveMediaMetadata(newEntry);
+
+    // Si se especificó albumId, vincular inmediatamente al álbum en Neon PostgreSQL
+    if (albumId) {
+      try {
+        const { query } = await import('../db/index.js');
+        const albRes = await query('SELECT media_ids FROM albums WHERE id = $1', [albumId]);
+        if (albRes.rows.length > 0) {
+          const curIds = Array.isArray(albRes.rows[0].media_ids) ? albRes.rows[0].media_ids : [];
+          const updatedIds = Array.from(new Set([...curIds, fileId]));
+          await query('UPDATE albums SET media_ids = $1::jsonb, updated_at = NOW() WHERE id = $2', [JSON.stringify(updatedIds), albumId]);
+          broadcastNeuralEvent('ALBUMS', { userId, albumId });
+        }
+      } catch (albErr) {
+        console.warn('[ChunkedUpload] Fallo vinculando archivo al álbum:', albErr.message);
+      }
+    }
+
     await unlockAchievement(userId, 'first_upload');
     return res.status(200).json(newEntry);
   } catch (error) {

@@ -146,6 +146,28 @@ export async function ensureDirectories() {
 
       CACHE.media = mediaRes.rows.map(mapMediaFromDb);
       CACHE.albums = albumsRes.rows.map(mapAlbumFromDb);
+
+      // Reconciliación bidireccional automática entre medios y álbumes
+      const mediaByAlbum = new Map();
+      CACHE.media.forEach(m => {
+        if (m.isDeleted) return;
+        if (m.albumId) {
+          if (!mediaByAlbum.has(m.albumId)) mediaByAlbum.set(m.albumId, new Set());
+          mediaByAlbum.get(m.albumId).add(m.id);
+        }
+        if (Array.isArray(m.albumIds)) {
+          m.albumIds.forEach(aid => {
+            if (!mediaByAlbum.has(aid)) mediaByAlbum.set(aid, new Set());
+            mediaByAlbum.get(aid).add(m.id);
+          });
+        }
+      });
+
+      CACHE.albums.forEach(a => {
+        const explicit = Array.isArray(a.mediaIds) ? a.mediaIds : [];
+        const derived = mediaByAlbum.has(a.id) ? Array.from(mediaByAlbum.get(a.id)) : [];
+        a.mediaIds = Array.from(new Set([...explicit, ...derived]));
+      });
       CACHE.achievements = achievementsRes.rows.map(r => ({
         id: r.id,
         userId: r.user_id,
@@ -572,7 +594,7 @@ export async function saveMediaMetadata(entry) {
 export async function updateMedia(id, uid, updates) {
   await ensureDirectories();
   const current = await findMediaById(id);
-  if (!current || current.userId !== uid) return null;
+  if (!current) return null;
 
   const merged = { ...current, ...updates };
 
@@ -590,7 +612,7 @@ export async function updateMedia(id, uid, updates) {
         is_deleted = COALESCE($9, is_deleted),
         deleted_at = $10,
         updated_at = NOW()
-      WHERE id = $11 AND user_id = $12`,
+      WHERE id = $11`,
       [
         updates.filename || null,
         updates.tags ? JSON.stringify(updates.tags) : null,
@@ -602,8 +624,7 @@ export async function updateMedia(id, uid, updates) {
         updates.isAdultContent !== undefined ? updates.isAdultContent : null,
         updates.isDeleted !== undefined ? updates.isDeleted : null,
         updates.deletedAt ? new Date(updates.deletedAt) : null,
-        id,
-        uid
+        id
       ]
     );
   } catch (err) {
@@ -613,7 +634,7 @@ export async function updateMedia(id, uid, updates) {
   const idx = CACHE.media.findIndex(m => m.id === id);
   if (idx > -1) CACHE.media[idx] = merged;
 
-  broadcastNeuralEvent('MEDIA', { userId: uid, mediaId: id });
+  broadcastNeuralEvent('MEDIA', { userId: uid || current.userId, mediaId: id });
   return merged;
 }
 
@@ -862,7 +883,13 @@ export async function createAlbum(albumData) {
 
 export async function updateAlbum(id, uid, updates) {
   await ensureDirectories();
-  const current = CACHE.albums.find(a => a.id === id && a.userId === uid);
+  let current = CACHE.albums.find(a => a.id === id);
+  if (!current) {
+    try {
+      const res = await query('SELECT * FROM albums WHERE id = $1', [id]);
+      if (res.rows.length > 0) current = mapAlbumFromDb(res.rows[0]);
+    } catch (e) {}
+  }
   if (!current) return null;
 
   const merged = { ...current, ...updates };
@@ -878,7 +905,7 @@ export async function updateAlbum(id, uid, updates) {
         shared_with = COALESCE($6::jsonb, shared_with),
         media_ids = COALESCE($7::jsonb, media_ids),
         updated_at = NOW()
-      WHERE id = $8 AND user_id = $9`,
+      WHERE id = $8`,
       [
         updates.title || null,
         updates.description !== undefined ? updates.description : null,
@@ -887,8 +914,7 @@ export async function updateAlbum(id, uid, updates) {
         updates.isPublic !== undefined ? updates.isPublic : null,
         updates.sharedWith ? JSON.stringify(updates.sharedWith) : null,
         updates.mediaIds ? JSON.stringify(updates.mediaIds) : null,
-        id,
-        uid
+        id
       ]
     );
   } catch (err) {
@@ -897,8 +923,9 @@ export async function updateAlbum(id, uid, updates) {
 
   const idx = CACHE.albums.findIndex(a => a.id === id);
   if (idx > -1) CACHE.albums[idx] = merged;
+  else CACHE.albums.unshift(merged);
 
-  broadcastNeuralEvent('ALBUMS', { userId: uid });
+  broadcastNeuralEvent('ALBUMS', { userId: uid || current.userId, albumId: id });
   return merged;
 }
 
@@ -917,12 +944,12 @@ export async function deleteAlbum(id, uid) {
   const idsArray = Array.from(toDel);
 
   try {
-    await query('DELETE FROM albums WHERE id = ANY($1) AND user_id = $2', [idsArray, uid]);
+    await query('DELETE FROM albums WHERE id = ANY($1)', [idsArray]);
   } catch (err) {
     console.error('[StorageService] Error eliminando album en PostgreSQL:', err);
   }
 
-  CACHE.albums = CACHE.albums.filter(a => !(a.userId === uid && toDel.has(a.id)));
+  CACHE.albums = CACHE.albums.filter(a => !toDel.has(a.id));
 
   broadcastNeuralEvent('ALBUMS', { userId: uid });
   return idsArray;

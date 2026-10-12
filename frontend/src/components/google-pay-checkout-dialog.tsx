@@ -12,23 +12,23 @@ import { useToast } from '@/hooks/use-toast';
 import { api } from '@/api/client';
 import { User } from '@/lib/types';
 import { 
-  loadGooglePayScript, 
-  requestGooglePayPayment, 
-  GooglePayConfig 
-} from '@/lib/google-pay';
-import { 
   ShieldCheck, 
   Lock, 
   CheckCircle2, 
-  Sparkles, 
   ArrowRight, 
   Loader2, 
   CreditCard,
-  Download,
   Calendar,
   AlertCircle
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { 
+  loadGooglePayScript, 
+  renderGooglePayButton,
+  getGooglePaymentDataRequest,
+  getPaymentsClient,
+  GooglePayConfig 
+} from '@/lib/google-pay';
 
 interface GooglePayCheckoutDialogProps {
   isOpen: boolean;
@@ -59,6 +59,7 @@ export function GooglePayCheckoutDialog({
   const [isProcessing, setIsProcessing] = useState(false);
   const [paymentSuccessData, setPaymentSuccessData] = useState<any>(null);
   const [isGooglePaySdkReady, setIsGooglePaySdkReady] = useState(false);
+  const [buttonRendered, setButtonRendered] = useState(false);
   const googlePayButtonRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
 
@@ -71,6 +72,7 @@ export function GooglePayCheckoutDialog({
     let isMounted = true;
     if (!isOpen) {
       setPaymentSuccessData(null);
+      setButtonRendered(false);
       return;
     }
 
@@ -102,54 +104,20 @@ export function GooglePayCheckoutDialog({
       .then(() => {
         if (isMounted) setIsGooglePaySdkReady(true);
       })
-      .catch(() => {});
+      .catch((err) => {
+        console.error('[GooglePay] Error cargando script de Google Pay:', err);
+      });
 
     return () => {
       isMounted = false;
     };
   }, [isOpen]);
 
-  // Manejar el proceso de pago con Google Pay
-  const handleInitiateGooglePay = async () => {
-    if (!user || !config) return;
-
+  // Ejecución centralizada de confirmación de pago y actualización en backend
+  const executePaymentWithPayload = async (paymentData: any) => {
+    if (!user) return;
+    setIsProcessing(true);
     try {
-      setIsProcessing(true);
-      let paymentData: any = null;
-
-      try {
-        // Intentar invocar la pasarela nativa de Google Pay Web
-        paymentData = await requestGooglePayPayment(config, priceAmount, 'USD');
-      } catch (sdkError: any) {
-        if (sdkError.message === 'Pago cancelado por el usuario') {
-          setIsProcessing(false);
-          return;
-        }
-
-        console.log('[GooglePay] Fallback en entorno de prueba / sandbox interactivo:', sdkError.message);
-        // Generar autorización de prueba segura para el entorno de desarrollo
-        paymentData = {
-          apiVersion: 2,
-          apiVersionMinor: 0,
-          paymentMethodData: {
-            type: 'CARD',
-            description: 'Mastercard •••• 4242 (Google Pay Test Token)',
-            info: {
-              cardNetwork: 'MASTERCARD',
-              cardDetails: '•••• 4242'
-            },
-            tokenizationData: {
-              type: 'PAYMENT_GATEWAY',
-              token: JSON.stringify({
-                gatewayToken: 'gpay_token_test_' + Math.random().toString(36).substring(2, 12),
-                status: 'AUTHORIZED'
-              })
-            }
-          }
-        };
-      }
-
-      // Enviar la confirmación al backend para registrar la transacción y actualizar PostgreSQL
       const response = await api.payments.processGooglePay({
         userId: user.id,
         plan: tier.id,
@@ -197,6 +165,60 @@ export function GooglePayCheckoutDialog({
       setIsProcessing(false);
     }
   };
+
+  // Manejador síncrono del clic de Google Pay para preservar el User Gesture token del navegador
+  const triggerGooglePay = () => {
+    if (!config || !user) return;
+    try {
+      const paymentsClient = getPaymentsClient(config);
+      if (!paymentsClient) {
+        toast({
+          title: "Google Pay",
+          description: "Google Pay aún se está inicializando. Por favor intenta de nuevo.",
+          variant: "destructive"
+        });
+        return;
+      }
+
+      const paymentDataRequest = getGooglePaymentDataRequest(config, priceAmount, 'USD');
+
+      // Invocación síncrona inmediata en el evento de clic
+      paymentsClient.loadPaymentData(paymentDataRequest)
+        .then(async (paymentData: any) => {
+          await executePaymentWithPayload(paymentData);
+        })
+        .catch((err: any) => {
+          if (err.statusCode === 'CANCELED') {
+            console.log('[GooglePay] El usuario canceló la ventana de Google Pay');
+            return;
+          }
+          console.error('[GooglePay] Error en loadPaymentData:', err);
+          const msg = err.statusMessage || err.message || 'Error al conectar con Google Pay.';
+          toast({
+            title: "Google Pay",
+            description: msg,
+            variant: "destructive"
+          });
+        });
+    } catch (err: any) {
+      console.error('[GooglePay] Error al abrir Google Pay:', err);
+    }
+  };
+
+  // Renderizar el botón oficial de Google Pay cuando el SDK y el DOM estén listos
+  useEffect(() => {
+    if (!isOpen || !config || !isGooglePaySdkReady || !googlePayButtonRef.current) return;
+
+    const rendered = renderGooglePayButton(
+      googlePayButtonRef.current,
+      config,
+      triggerGooglePay
+    );
+
+    if (rendered) {
+      setButtonRendered(true);
+    }
+  }, [isOpen, config, isGooglePaySdkReady, priceAmount]);
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && !isProcessing && onClose()}>
@@ -337,44 +359,66 @@ export function GooglePayCheckoutDialog({
                 <Lock className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
                 <div className="text-[11px] leading-tight text-white/80">
                   <strong className="block text-white mb-0.5">Cifrado de Extremo a Extremo</strong>
-                  Autenticación biométrica de 1 toque con tu cuenta Google.
+                  Autenticación biométrica con tu cuenta oficial de Google.
                 </div>
               </div>
             </div>
 
-            {/* BOTÓN OFICIAL DE GOOGLE PAY */}
+            {/* CONTENEDOR DEL BOTÓN OFICIAL DE GOOGLE PAY */}
             <div className="space-y-3 pt-2">
-              <button
-                type="button"
-                onClick={handleInitiateGooglePay}
-                disabled={isProcessing || loadingConfig}
+              {/* Botón oficial inyectado por Google Pay SDK */}
+              <div 
+                ref={googlePayButtonRef} 
                 className={cn(
-                  "relative w-full h-14 rounded-2xl font-bold flex items-center justify-center gap-3 transition-all duration-300 shadow-xl overflow-hidden",
-                  "bg-black hover:bg-neutral-900 border border-white/20 text-white hover:border-white/40 active:scale-[0.99]",
-                  (isProcessing || loadingConfig) && "opacity-80 cursor-wait"
+                  "w-full min-h-[48px] flex justify-center items-center rounded-2xl overflow-hidden transition-all",
+                  "[&>button]:!w-full [&>button]:!h-12 [&>button]:!rounded-2xl [&>button]:!cursor-pointer",
+                  !buttonRendered && "hidden",
+                  (isProcessing || loadingConfig) && "opacity-75 pointer-events-none"
                 )}
-              >
-                {isProcessing ? (
-                  <div className="flex items-center gap-2.5">
-                    <Loader2 className="w-5 h-5 animate-spin text-white" />
-                    <span className="text-sm font-semibold tracking-wide">
-                      Conectando con Google Pay...
-                    </span>
-                  </div>
-                ) : (
-                  <div className="flex items-center justify-center gap-3 w-full">
-                    <span className="text-sm font-medium tracking-wide">Pagar con</span>
-                    <div className="flex items-center font-black tracking-tight text-lg">
-                      <span className="text-white">G</span>
-                      <span className="text-white ml-0.5">Pay</span>
-                    </div>
-                  </div>
-                )}
-              </button>
+              />
 
-              <div className="flex items-center justify-center gap-2 text-[11px] text-muted-foreground">
+              {/* Botón de respaldo directo si el contenedor tarda en inyectarse */}
+              {!buttonRendered && (
+                <button
+                  type="button"
+                  onClick={triggerGooglePay}
+                  disabled={isProcessing || loadingConfig}
+                  className={cn(
+                    "relative w-full h-12 rounded-2xl font-bold flex items-center justify-center gap-3 transition-all duration-300 shadow-xl overflow-hidden",
+                    "bg-black hover:bg-neutral-900 border border-white/20 text-white hover:border-white/40 active:scale-[0.99]",
+                    (isProcessing || loadingConfig) && "opacity-80 cursor-wait"
+                  )}
+                >
+                  {isProcessing || loadingConfig ? (
+                    <div className="flex items-center gap-2.5">
+                      <Loader2 className="w-4 h-4 animate-spin text-white" />
+                      <span className="text-xs font-semibold tracking-wide">
+                        {loadingConfig ? 'Cargando Google Pay...' : 'Procesando pago...'}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-center gap-2.5 w-full">
+                      <span className="text-sm font-medium tracking-wide">Pagar con</span>
+                      <div className="flex items-center font-black tracking-tight text-base">
+                        <span className="text-white">G</span>
+                        <span className="text-white ml-0.5">Pay</span>
+                      </div>
+                    </div>
+                  )}
+                </button>
+              )}
+
+              {/* Estado de carga */}
+              {isProcessing && (
+                <div className="flex items-center justify-center gap-2 py-1 text-xs text-muted-foreground animate-pulse">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
+                  <span>Procesando pago y activando plan en el servidor...</span>
+                </div>
+              )}
+
+              <div className="flex items-center justify-center gap-2 text-[11px] text-muted-foreground pt-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                <span>Pasarela de Pago Google Pay Verificada • Cancelable en cualquier momento</span>
+                <span>Pasarela de Pago Google Pay Verificada • Facturación Segura</span>
               </div>
             </div>
           </div>

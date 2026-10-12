@@ -25,7 +25,6 @@ async function fetchDriveMediaStream(fileId, token, isExport = false) {
 
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      // Interceptar redirección para preservar cabecera Authorization en saltos de dominio
       driveRes = await fetch(driveUrl, {
         headers: {
           Authorization: `Bearer ${token}`
@@ -33,15 +32,27 @@ async function fetchDriveMediaStream(fileId, token, isExport = false) {
         redirect: 'manual'
       });
 
-      // Seguir redirección 301, 302, 303, 307, 308 conservando el token
+      // Seguir redirección 301, 302, 303, 307, 308
       if ([301, 302, 303, 307, 308].includes(driveRes.status)) {
         const redirectUrl = driveRes.headers.get('location');
         if (redirectUrl) {
-          driveRes = await fetch(redirectUrl, {
-            headers: {
-              Authorization: `Bearer ${token}`
-            }
+          const isSignedStorage = redirectUrl.includes('googleusercontent.com') || 
+                                  redirectUrl.includes('storage.googleapis.com') ||
+                                  redirectUrl.includes('signature=') ||
+                                  redirectUrl.includes('authuser=');
+
+          let streamRes = await fetch(redirectUrl, {
+            headers: isSignedStorage ? {} : { Authorization: `Bearer ${token}` }
           });
+
+          // Si sin token da 401/403, reintentar con el token
+          if (!streamRes.ok && (streamRes.status === 401 || streamRes.status === 403) && isSignedStorage) {
+            streamRes = await fetch(redirectUrl, {
+              headers: { Authorization: `Bearer ${token}` }
+            });
+          }
+
+          driveRes = streamRes;
         }
       }
 
@@ -147,13 +158,13 @@ export async function importFromCloud(req, res) {
  */
 export async function importDriveBatch(req, res) {
   try {
-    const { userId, token, items } = req.body;
+    const { userId, token, items, albumId } = req.body;
 
     if (!userId || !token || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Parámetros inválidos. Se requiere userId, token y array items.' });
     }
 
-    console.log(`[DriveBatch] Iniciando ingesta masiva de ${items.length} activos para usuario ${userId}...`);
+    console.log(`[DriveBatch] Iniciando ingesta masiva de ${items.length} activos para usuario ${userId}${albumId ? ` en álbum ${albumId}` : ''}...`);
 
     const results = [];
     const errors = [];
@@ -163,16 +174,18 @@ export async function importDriveBatch(req, res) {
       const filename = item.name || `drive_media_${i}`;
       const isVideo = (item.mimeType && item.mimeType.startsWith('video/')) || /\.(mp4|mov|webm|mkv|avi|m4v|flv)$/i.test(filename);
       const isGoogleDoc = item.mimeType?.startsWith('application/vnd.google-apps.');
-      const type = isVideo ? 'video' : 'image';
+      const type = isVideo ? 'video' : (item.mimeType && item.mimeType.startsWith('image/')) ? 'image' : 'file';
+      const isPrivate = Boolean(item.isPrivate);
+      const isAdultContent = Boolean(item.isAdult || item.isAdultContent);
 
       try {
         console.log(`[DriveBatch] [${i + 1}/${items.length}] Transfiriendo a disco: ${filename} (ID: ${item.id})`);
 
         const driveRes = await fetchDriveMediaStream(item.id, token, isGoogleDoc);
 
-        if (!driveRes.ok) {
-          const errText = await driveRes.text().catch(() => '');
-          throw new Error(`Google API status ${driveRes.status}: ${driveRes.statusText} ${errText}`);
+        if (!driveRes || !driveRes.ok) {
+          const errText = driveRes ? await driveRes.text().catch(() => '') : 'Sin respuesta de Google';
+          throw new Error(`Google API status ${driveRes?.status || 500}: ${driveRes?.statusText || ''} ${errText}`);
         }
 
         const fileId = Math.random().toString(36).substring(2, 11);
@@ -181,7 +194,7 @@ export async function importDriveBatch(req, res) {
 
         const cleanFilename = filename.replace(/[^a-z0-9._-]/gi, '_').toLowerCase();
         const baseClean = cleanFilename.replace(/\.[^/.]+$/, '');
-        let diskName = `${fileId}_drive_${baseClean}.${isVideo ? 'webm' : 'webp'}`;
+        let diskName = `${fileId}_drive_${baseClean}.${isVideo ? 'webm' : (type === 'image' ? 'webp' : 'bin')}`;
         let filePath = path.join(userPath, diskName);
         let publicPath = `/uploads/${userId}/${type}/${diskName}`;
 
@@ -192,7 +205,7 @@ export async function importDriveBatch(req, res) {
         let height = null;
         let duration = null;
         let finalSize = 0;
-        let finalMime = isVideo ? 'video/webm' : 'image/webp';
+        let finalMime = isVideo ? 'video/webm' : (item.mimeType || 'application/octet-stream');
 
         const thumbDir = path.join(UPLOADS_DIR, userId, 'thumbnails');
         await fs.mkdir(thumbDir, { recursive: true });
@@ -235,7 +248,6 @@ export async function importDriveBatch(req, res) {
             const uploadRes = await uploadToCloudStorage(cloudStoragePath, encVideoPath);
             cloudUrl = uploadRes.downloadUrl;
             console.log(`[DriveBatch] WebM subido exitosamente a Firebase Storage! URL disponible.`);
-            // Limpieza inmediata de archivos temporales en el servidor
             await fs.unlink(filePath).catch(() => {});
             await fs.unlink(encVideoPath).catch(() => {});
             await fs.unlink(thumbDiskPath).catch(() => {});
@@ -246,44 +258,61 @@ export async function importDriveBatch(req, res) {
             await fs.unlink(thumbDiskPath).catch(() => {});
           }
         } else {
-          // Descargar imagen directamente a archivo temporal
-          const rawImgPath = path.join(userPath, `temp_${fileId}_raw`);
-          const fileStream = nodeFs.createWriteStream(rawImgPath);
+          // Descargar archivo / imagen directamente a archivo temporal
+          const rawFilePath = path.join(userPath, `temp_${fileId}_raw`);
+          const fileStream = nodeFs.createWriteStream(rawFilePath);
           await pipeline(Readable.fromWeb(driveRes.body), fileStream);
 
-          try {
-            const imgBuffer = await fs.readFile(rawImgPath);
-            const image = sharp(imgBuffer);
-            const meta = await image.metadata();
-            width = meta.width || null;
-            height = meta.height || null;
+          const rawBuffer = await fs.readFile(rawFilePath);
+          finalSize = rawBuffer.length;
 
-            // Optimización a WebP de alta fidelidad
-            const webpBuffer = await sharp(imgBuffer).webp({ quality: 82 }).toBuffer();
-            finalSize = webpBuffer.length;
-            const encrypted = encryptZeroKnowledge(webpBuffer);
+          // Intentar optimizar con Sharp si es una imagen soportada
+          let isSharpProcessed = false;
+          if (type === 'image' || rawBuffer.length > 0) {
+            try {
+              const image = sharp(rawBuffer);
+              const meta = await image.metadata();
+              width = meta.width || null;
+              height = meta.height || null;
 
-            // Generar y subir miniatura WebP directamente
-            const thumbBuffer = await sharp(webpBuffer).resize({ width: 480, withoutEnlargement: true }).webp({ quality: 75 }).toBuffer();
-            const encThumb = encryptZeroKnowledge(thumbBuffer);
-            uploadToCloudStorage(`thumbnails/${userId}/${thumbName}.enc`, encThumb).catch(() => {});
-            finalThumbnailUrl = `/uploads/${userId}/thumbnails/${thumbName}`;
+              // Optimización a WebP de alta fidelidad
+              const webpBuffer = await sharp(rawBuffer).webp({ quality: 82 }).toBuffer();
+              finalSize = webpBuffer.length;
+              finalMime = 'image/webp';
+              const encrypted = encryptZeroKnowledge(webpBuffer);
 
-            // Subir a Firebase Storage
-            cloudStoragePath = `media/${userId}/image/${diskName}.enc`;
-            const uploadRes = await uploadToCloudStorage(cloudStoragePath, encrypted);
-            cloudUrl = uploadRes.downloadUrl;
+              // Generar y subir miniatura WebP
+              const thumbBuffer = await sharp(webpBuffer).resize({ width: 480, withoutEnlargement: true }).webp({ quality: 75 }).toBuffer();
+              const encThumb = encryptZeroKnowledge(thumbBuffer);
+              uploadToCloudStorage(`thumbnails/${userId}/${thumbName}.enc`, encThumb).catch(() => {});
+              finalThumbnailUrl = `/uploads/${userId}/thumbnails/${thumbName}`;
 
-            // Limpieza inmediata de archivos temporales
-            await fs.unlink(rawImgPath).catch(() => {});
-            await fs.unlink(filePath).catch(() => {});
-            await fs.unlink(thumbDiskPath).catch(() => {});
-          } catch (imgErr) {
-            console.warn('[DriveBatch] Fallo procesando imagen para Firebase Storage:', imgErr.message);
-            await fs.unlink(rawImgPath).catch(() => {});
-            await fs.unlink(filePath).catch(() => {});
-            await fs.unlink(thumbDiskPath).catch(() => {});
+              // Subir a Firebase Storage
+              cloudStoragePath = `media/${userId}/image/${diskName}.enc`;
+              const uploadRes = await uploadToCloudStorage(cloudStoragePath, encrypted);
+              cloudUrl = uploadRes.downloadUrl;
+              isSharpProcessed = true;
+            } catch (sharpErr) {
+              console.log(`[DriveBatch] Archivo no procesable como imagen Sharp, importando como archivo crudo: ${filename}`);
+            }
           }
+
+          // Si no es imagen o Sharp no pudo procesarlo (documento, PDF, binario), guardar crudo cifrado
+          if (!isSharpProcessed) {
+            try {
+              const encRaw = encryptZeroKnowledge(rawBuffer);
+              cloudStoragePath = `media/${userId}/${type}/${diskName}.enc`;
+              const uploadRes = await uploadToCloudStorage(cloudStoragePath, encRaw);
+              cloudUrl = uploadRes.downloadUrl;
+            } catch (encErr) {
+              console.warn('[DriveBatch] Fallo al subir archivo crudo a Firebase Storage:', encErr.message);
+            }
+          }
+
+          // Limpieza de temporales
+          await fs.unlink(rawFilePath).catch(() => {});
+          await fs.unlink(filePath).catch(() => {});
+          await fs.unlink(thumbDiskPath).catch(() => {});
         }
 
         const newMedia = {
@@ -295,7 +324,7 @@ export async function importDriveBatch(req, res) {
           thumbnailUrl: finalThumbnailUrl,
           cloudStoragePath,
           cloudUrl,
-          filename: `${baseClean}.${isVideo ? 'webm' : 'webp'}`,
+          filename: `${baseClean}.${isVideo ? 'webm' : (type === 'image' ? 'webp' : 'bin')}`,
           originalName: filename,
           size: finalSize,
           width,
@@ -303,6 +332,8 @@ export async function importDriveBatch(req, res) {
           duration,
           mimeType: finalMime,
           tags: ['google-drive', 'cloud-import', type, isVideo ? 'webm' : 'webp'],
+          albumId: albumId || item.albumId || null,
+          albumIds: (albumId || item.albumId) ? [albumId || item.albumId] : [],
           isPrivate,
           isAdultContent,
           createdAt: new Date().toISOString(),
@@ -324,6 +355,23 @@ export async function importDriveBatch(req, res) {
       } catch (itemErr) {
         console.error(`[DriveBatch] Error ingestado ${filename}:`, itemErr);
         errors.push({ id: item.id, name: filename, error: itemErr.message });
+      }
+    }
+
+    // Vincular automáticamente los medios importados al álbum destino
+    if (albumId && results.length > 0) {
+      try {
+        const importedIds = results.map(r => r.id);
+        const { query } = await import('../db/index.js');
+        const albRes = await query('SELECT media_ids FROM albums WHERE id = $1', [albumId]);
+        if (albRes.rows.length > 0) {
+          const curIds = Array.isArray(albRes.rows[0].media_ids) ? albRes.rows[0].media_ids : [];
+          const updatedIds = Array.from(new Set([...curIds, ...importedIds]));
+          await query('UPDATE albums SET media_ids = $1::jsonb, updated_at = NOW() WHERE id = $2', [JSON.stringify(updatedIds), albumId]);
+          broadcastNeuralEvent('ALBUMS', { userId, albumId });
+        }
+      } catch (albErr) {
+        console.warn('[DriveBatch] Fallo vinculando lote a álbum:', albErr.message);
       }
     }
 

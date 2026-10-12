@@ -273,13 +273,25 @@ export async function deleteAlbum(id, uid) {
 }
 
 export async function addMultipleToAlbum(aid, uid, mids) {
-  const res = await api.albums.addMedia(aid, uid, mids);
-  return res.success;
+  const effectiveUid = uid || getStoredUser()?.id || 'all';
+  const res = await api.albums.addMedia(aid, effectiveUid, mids);
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('neural-update', { 
+      detail: { channel: 'ALBUMS', action: 'LINK_MEDIA', albumId: aid, mediaIds: mids } 
+    }));
+  }
+  return res.album || res;
 }
 
 export async function removeMultipleFromAlbum(aid, uid, mids) {
-  const res = await api.albums.removeMedia(aid, uid, mids);
-  return res?.success || true;
+  const effectiveUid = uid || getStoredUser()?.id || 'all';
+  const res = await api.albums.removeMedia(aid, effectiveUid, mids);
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('neural-update', { 
+      detail: { channel: 'ALBUMS', action: 'UNLINK_MEDIA', albumId: aid, mediaIds: mids } 
+    }));
+  }
+  return res.album || res;
 }
 
 // ==================== LOGROS ====================

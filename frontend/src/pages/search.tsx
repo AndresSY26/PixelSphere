@@ -248,14 +248,19 @@ function SearchResultsContent() {
   };
 
   const handleSingleAddToAlbum = async (albumId: string) => {
-    if (!user || !selectedMedia) return;
+    if (!selectedMedia) return;
+    const effectiveUid = user?.id || (typeof window !== 'undefined' && localStorage.getItem('ps_active_session') ? JSON.parse(localStorage.getItem('ps_active_session') || '{}')?.id : null);
     try { 
-      const result = await addMultipleToAlbum(albumId, user.id, [selectedMedia.id]); 
-      if (result) {
-        setAlbums(prev => prev.map(a => a.id === albumId ? (result as Album) : a));
-      }
+      await addMultipleToAlbum(albumId, effectiveUid, [selectedMedia.id]); 
+      setAlbums(prev => prev.map(a => {
+        if (a.id === albumId) {
+          const currentIds = Array.isArray(a.mediaIds) ? a.mediaIds : [];
+          return { ...a, mediaIds: Array.from(new Set([...currentIds, selectedMedia.id])) };
+        }
+        return a;
+      }));
       const album = albums.find(a => a.id === albumId);
-      toast({ title: "Vínculo Creado", description: `Añadido a ${album?.title}` }); 
+      toast({ title: "Vínculo Creado", description: `Añadido a ${album?.title || 'la colección'}` }); 
     } catch (e) {
       console.error("Error al añadir al álbum en búsqueda:", e);
       toast({ title: "Error", variant: "destructive" });
@@ -263,14 +268,19 @@ function SearchResultsContent() {
   };
 
   const handleRemoveFromAlbum = async (albumId: string) => {
-    if (!user || !selectedMedia) return;
-    try {
-      const result = await removeMultipleFromAlbum(albumId, user.id, [selectedMedia.id]);
-      if (result) {
-        setAlbums(prev => prev.map(a => a.id === albumId ? (result as Album) : a));
-      }
+    if (!selectedMedia) return;
+    const effectiveUid = user?.id || (typeof window !== 'undefined' && localStorage.getItem('ps_active_session') ? JSON.parse(localStorage.getItem('ps_active_session') || '{}')?.id : null);
+    try { 
+      await removeMultipleFromAlbum(albumId, effectiveUid, [selectedMedia.id]);
+      setAlbums(prev => prev.map(a => {
+        if (a.id === albumId) {
+          const currentIds = Array.isArray(a.mediaIds) ? a.mediaIds : [];
+          return { ...a, mediaIds: currentIds.filter(id => id !== selectedMedia.id) };
+        }
+        return a;
+      }));
       const album = albums.find(a => a.id === albumId);
-      toast({ title: "Vínculo Removido", description: `Retirado de ${album?.title}` });
+      toast({ title: "Vínculo Removido", description: `Retirado de ${album?.title || 'la colección'}` });
     } catch (e) {
       console.error("Error al remover del álbum en búsqueda:", e);
       toast({ title: "Error", variant: "destructive" });

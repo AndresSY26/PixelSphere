@@ -414,6 +414,33 @@ npm start
 
 ---
 
+## 🚀 Registro de Últimos Cambios y Actualizaciones (Changelog)
+
+A continuación se detalla cada una de las mejoras, correcciones y nuevas funcionalidades implementadas tras la última versión del README:
+
+### 1. 💳 Pasarela de Pagos Oficial con Google Pay (Pagos Reales y Cuenta de Desarrollador)
+- **Acceso Developer a Google Pay:** Guía y soporte para registro en la [Google Pay & Wallet Business Console](https://pay.google.com/business/console/), obtención de Merchant ID, validación de dominio web y configuración de pasarelas de pago (`GATEWAY`: Stripe, Adyen, Braintree, etc.).
+- **Procesamiento de Transacciones Reales (`/api/payments/google-pay/process`):** Eliminación de simulaciones estáticas en favor de un flujo de pago funcional que valida el token de pago cifrado de Google Pay Web API, audita la transacción en la tabla `payments` de Neon PostgreSQL y actualiza inmediatamente el plan del usuario (`pro` 50 GB o `enterprise` 200 GB) con emisión de recibo digital.
+- **Configuración Dinámica de Pasarela (`/api/payments/config/google-pay`):** Endpoint que expone parámetros de entorno (`TEST` / `PRODUCTION`), redes admitidas (VISA, MASTERCARD, AMEX, DISCOVER), y métodos de autenticación (`PAN_ONLY` y `CRYPTOGRAM_3DS`).
+
+### 2. 📱 Rediseño Móvil Responsivo del Explorador de Google Drive
+- **Adaptabilidad Multiplataforma Total (`100dvh`):** Rediseño completo de la interfaz de subida desde Google Drive (`GoogleDrivePicker`) para teléfonos inteligentes, tabletas y computadores de escritorio.
+- **Ventana Modal a Pantalla Completa en Móviles:** Se reemplazó el centrado estático que generaba cortes verticales por un contenedor adaptativo (`fixed inset-0 sm:inset-auto sm:max-w-4xl`), garantizando que la interfaz no se desborde ni se oculte detrás de la barra de navegación del navegador o el teclado virtual.
+- **Barra Inferior Flotante de Acciones (Bottom Action Bar):** En pantallas pequeñas se incorpora una barra inferior fija con contador de elementos seleccionados, botón táctil de limpieza masiva y botón de importación directa de alto contraste.
+- **Modos de Visualización Dinámica:** Selector para alternar instantáneamente entre vista en Cuadrícula (*Grid*) y vista en Lista (*List*) con metadatos legibles (peso formateado, tipo MIME, fecha de modificación).
+- **Filtros Horizontales Deslizables:** Pestañas deslizables para filtrar con un toque entre *Todos*, *Fotos*, *Videos* y *Documentos*.
+- **Barra de Progreso y Streaming Masivo:** Soporte para transferencias masivas de 1 a 126+ activos en segundo plano (`/api/cloud/import-drive-batch`) con transcodificación WebM de bajo consumo de red y almacenamiento en Firebase Storage.
+
+### 3. 📁 Corrección de Persistencia y Visibilidad en Álbumes y Colecciones
+- **Reconciliación Bidireccional en Neon PostgreSQL:** Solución definitiva al problema por el cual los elementos guardados en los álbumes no se reflejaban o no se veían al reiniciar sesión o volver a ingresar a la plataforma.
+- **Sincronización Dual:** Ahora el sistema mantiene sincronizados tanto el array `media_ids` en la tabla `albums` como las columnas relacionales `album_id` y `album_ids` (JSONB) en la tabla `media`.
+- **Eliminación de Bloqueos Silenciosos por `userId`:** Se corrigieron las funciones de backend (`addMediaToAlbum`, `removeMediaFromAlbum`, `updateAlbum` y `updateMedia`), eliminando filtros restrictivos que descartaban actualizaciones cuando el `userId` de sesión local difería del identificador del propietario de la fila.
+- **Mapeo Automático de Medios Existentes:** Se reconciliaron todos los archivos multimedia existentes en la base de datos con sus respectivos álbumes (ej. *Acostada 😈*, *Enfermera 😈*, *Masturbación 😈*, *Playa 😈*, *Sexy 😈*, *Developer*), recuperando sus carátulas y contadores de activos reales.
+- **Actualización Reactiva Inmediata en la UI:** Al vincular o desvincular un elemento desde la **Galería**, la **Bóveda (Vault)**, la **Búsqueda** o los **Álbumes**, el estado local se actualiza al instante alternando los botones entre *Vincular* y *Desvincular* y emitiendo el evento SSE `neural-update` para actualizar la barra lateral de navegación sin necesidad de recargar la página.
+- **Soporte de Destino de Álbum en Subida y Google Drive:** Se incorporó el parámetro `targetAlbumId` en el modal de subida (`UploadDialog`) y en el extractor de Google Drive para permitir subir o importar archivos directamente hacia una colección específica.
+
+---
+
 <div align="center">
 
 **PixelSphere** — Desarrollado para una experiencia multimedia sin límites, segura y asistida por Inteligencia Artificial.

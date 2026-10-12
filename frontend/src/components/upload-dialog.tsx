@@ -30,7 +30,8 @@ import {
   FileText,
   FileVideo,
   Sparkles,
-  ShieldCheck
+  ShieldCheck,
+  ChevronRight
 } from 'lucide-react';
 import {
   Tooltip,
@@ -45,7 +46,7 @@ import { cn, formatBytes } from '@/lib/utils';
 import Image from 'next/image';
 import GoogleDrivePicker from '@/components/google-drive-picker';
 import { GoogleDriveFile } from '@/lib/google-drive';
-import { getAccessToken } from '@/lib/google-auth';
+import { getAccessToken, googleSignIn } from '@/lib/google-auth';
 
 interface UploadFile {
   id: string;
@@ -68,12 +69,13 @@ interface UploadDialogProps {
   isOpen: boolean;
   onClose: () => void;
   user: User;
+  defaultAlbumId?: string;
   onUploadSuccess?: () => void;
 }
 
 const CHUNK_SIZE = 4 * 1024 * 1024; // 4MB - Óptimo para estabilidad y rendimiento en subidas de red
 
-export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }: UploadDialogProps) {
+export default function UploadDialog({ isOpen, onClose, user, defaultAlbumId, onUploadSuccess }: UploadDialogProps) {
   const [uploadQueue, setUploadQueue] = useState<UploadFile[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [overallProgress, setOverallProgress] = useState(0);
@@ -360,9 +362,14 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
     // 1. Ingesta de archivos de Google Drive (procesamiento resiliente item a item con reintentos para evitar timeouts 503)
     if (driveItems.length > 0) {
       try {
-        const token = await getAccessToken();
+        let token = await getAccessToken();
         if (!token) {
-          throw new Error('Sesión de Google no disponible o expirada. Por favor abre Drive y reconecta.');
+          const gRes = await googleSignIn();
+          token = gRes?.accessToken || null;
+        }
+
+        if (!token) {
+          throw new Error('Sesión de Google no disponible o expirada. Por favor abre Drive y conecta tu cuenta.');
         }
 
         for (let i = 0; i < driveItems.length; i++) {
@@ -384,6 +391,7 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
                 body: JSON.stringify({
                   userId: user?.id || (typeof window !== 'undefined' && localStorage.getItem('ps_active_session') ? JSON.parse(localStorage.getItem('ps_active_session') || '{}')?.id : null) || 'default_user',
                   token,
+                  albumId: defaultAlbumId || undefined,
                   items: [{
                     id: it.driveItem!.id,
                     name: it.name,
@@ -420,6 +428,11 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
           if (!importedSuccess) {
             console.warn(`[DriveImport] Error importando ${it.name}:`, lastDriveErr?.message);
             setUploadQueue(prev => prev.map(f => f.id === it.id ? { ...f, status: 'error' } : f));
+            toast({
+              variant: 'destructive',
+              title: `Fallo al importar ${it.name}`,
+              description: lastDriveErr?.message || 'Error al descargar o procesar archivo de Google Drive.'
+            });
           }
         }
       } catch (driveErr: any) {
@@ -468,6 +481,7 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
               fd.append('lng', currentCoords.lng.toString());
             }
             if (item.cameraSource) fd.append('cameraSource', item.cameraSource);
+            if (defaultAlbumId) fd.append('albumId', defaultAlbumId);
             if (item.thumbnailB64 && chunkIndex === 0) {
               fd.append('thumbnailB64', item.thumbnailB64);
             }
@@ -557,231 +571,335 @@ export default function UploadDialog({ isOpen, onClose, user, onUploadSuccess }:
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && !isUploading && handleClose()}>
-      <DialogContent className="w-full max-w-full sm:max-w-[600px] h-full sm:h-auto bg-[#0a0a0c] border-white/10 p-0 overflow-hidden shadow-2xl z-[100] sm:rounded-3xl">
-        <DialogHeader className="p-6 pb-0">
-          <div className="flex items-center justify-between">
-            <div className="space-y-1">
-              <DialogTitle className="text-xl sm:text-2xl font-bold text-white flex items-center gap-2">
-                <Zap className="h-6 w-6 text-primary fill-primary/20" /> Laboratorio de Ingesta
+      <DialogContent className="fixed inset-0 sm:inset-auto sm:left-1/2 sm:top-1/2 translate-x-0 translate-y-0 sm:-translate-x-1/2 sm:-translate-y-1/2 w-full h-[100dvh] sm:h-auto sm:max-h-[90vh] sm:w-[94vw] sm:max-w-[620px] bg-[#0a0a0c] border-0 sm:border sm:border-white/10 p-0 overflow-hidden shadow-2xl z-[100] rounded-none sm:rounded-3xl flex flex-col focus:outline-none [&>button.absolute]:hidden">
+        
+        {/* CABECERA */}
+        <div className="shrink-0 p-4 sm:p-6 pb-4 border-b border-white/5 bg-[#0a0a0c]">
+          <div className="flex items-center justify-between gap-3">
+            <div className="space-y-0.5 min-w-0">
+              <DialogTitle className="text-lg sm:text-xl font-bold text-white flex items-center gap-2 truncate">
+                <Zap className="h-5 w-5 sm:h-6 sm:w-6 text-primary fill-primary/20 shrink-0" />
+                <span>Laboratorio de Ingesta</span>
               </DialogTitle>
               <div className="flex items-center gap-2">
-                <DialogDescription className="text-muted-foreground text-xs sm:text-sm">Orquestando activos...</DialogDescription>
+                <DialogDescription className="text-white/50 text-xs truncate">
+                  Orquestando activos multimedia
+                </DialogDescription>
                 {currentCoords && (
-                  <Badge className="bg-accent/10 text-accent border-accent/20 h-5 px-2 flex items-center gap-1">
+                  <Badge className="bg-accent/10 text-accent border-accent/20 h-4.5 px-1.5 flex items-center gap-1 shrink-0">
                     <Navigation className="h-2.5 w-2.5" /> <span className="text-[8px] font-black uppercase">GPS OK</span>
                   </Badge>
                 )}
               </div>
             </div>
-            {uploadQueue.length > 0 && !isUploading && !isCameraMode && (
-              <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm" className="rounded-xl border-white/10 bg-white/5 text-white hover:bg-white/10" onClick={() => setIsDrivePickerOpen(true)}>
-                  <svg className="h-3.5 w-3.5 mr-1.5" viewBox="0 0 87.3 78" xmlns="http://www.w3.org/2000/svg">
-                    <path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/>
-                    <path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44c-.8 1.4-1.2 2.95-1.2 4.5h27.5z" fill="#00ac47"/>
-                    <path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.502l5.852 11.5z" fill="#ea4335"/>
-                    <path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/>
-                    <path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc"/>
-                    <path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 28h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00"/>
-                  </svg>
-                  <span className="hidden sm:inline">Drive</span>
-                </Button>
-                <Button variant="outline" size="sm" className="rounded-xl border-white/10 bg-white/5 text-white" onClick={() => fileInputRef.current?.click()}>
-                  <Plus className="h-4 w-4 mr-2 text-primary" /> <span className="hidden sm:inline">Añadir más</span>
-                </Button>
-              </div>
-            )}
-          </div>
-        </DialogHeader>
 
-        <div className="p-4 sm:p-6 space-y-4 sm:space-y-6 overflow-y-auto max-h-[calc(100vh-200px)] sm:max-h-none">
+            <div className="flex items-center gap-1.5 shrink-0">
+              {uploadQueue.length > 0 && !isUploading && !isCameraMode && (
+                <>
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    className="h-8 px-2.5 rounded-xl border-white/10 bg-white/5 text-white hover:bg-white/10 text-xs" 
+                    onClick={() => setIsDrivePickerOpen(true)}
+                  >
+                    <svg className="h-3.5 w-3.5 mr-1 shrink-0" viewBox="0 0 87.3 78" xmlns="http://www.w3.org/2000/svg">
+                      <path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/>
+                      <path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44c-.8 1.4-1.2 2.95-1.2 4.5h27.5z" fill="#00ac47"/>
+                      <path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.502l5.852 11.5z" fill="#ea4335"/>
+                      <path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/>
+                      <path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc"/>
+                      <path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 28h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00"/>
+                    </svg>
+                    <span className="hidden xs:inline">Drive</span>
+                  </Button>
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    className="h-8 px-2.5 rounded-xl border-white/10 bg-white/5 text-white text-xs" 
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    <Plus className="h-3.5 w-3.5 mr-1 text-primary" /> <span className="hidden xs:inline">Más</span>
+                  </Button>
+                </>
+              )}
+
+              {/* Botón Cerrar Táctil */}
+              <button
+                type="button"
+                onClick={handleClose}
+                disabled={isUploading}
+                className="h-8 w-8 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-white/70 hover:text-white hover:bg-white/10 transition-colors ml-1"
+                aria-label="Cerrar ventana"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* CONTENIDO DESPLAZABLE */}
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6 space-y-4">
           {isCameraMode ? (
-            <div className="space-y-6">
-              <div className="relative aspect-[3/4] sm:aspect-video bg-black rounded-[2.5rem] overflow-hidden border border-white/10 shadow-2xl group">
+            <div className="space-y-4 sm:space-y-6">
+              <div className="relative aspect-[3/4] sm:aspect-video bg-black rounded-3xl overflow-hidden border border-white/10 shadow-2xl group">
                 <video ref={videoRef} autoPlay muted playsInline className={cn("w-full h-full object-cover", facingMode === 'user' && "scale-x-[-1]")} />
-                <div className="absolute inset-0 pointer-events-none p-6 flex flex-col justify-between">
+                <div className="absolute inset-0 pointer-events-none p-4 sm:p-6 flex flex-col justify-between">
                   <div className="bg-black/40 backdrop-blur-md px-3 py-1.5 rounded-xl border border-white/10 w-fit flex items-center gap-2">
                     <div className={cn("w-2 h-2 rounded-full", isRecording ? "bg-red-500 animate-pulse" : "bg-green-500")} />
                     <span className="text-[10px] font-bold text-white uppercase tracking-widest">{isRecording ? (Math.floor(recordingSeconds/60) + ':' + (recordingSeconds%60).toString().padStart(2, '0')) : 'STANDBY'}</span>
                   </div>
                 </div>
-                <div className="absolute bottom-8 left-0 right-0 px-8 flex items-center justify-between pointer-events-auto">
-                  <button onClick={toggleCamera} className="h-12 w-12 rounded-full bg-black/40 backdrop-blur-xl border border-white/10 text-white flex items-center justify-center hover:bg-white/10"><SwitchCamera className="h-6 w-6" /></button>
-                  <button onClick={activeTab === 'PHOTO' ? capturePhoto : (isRecording ? stopRecording : startRecording)} className="h-20 w-20 rounded-full border-[6px] border-white/20 p-1 transition-transform active:scale-90 group/shutter">
+                <div className="absolute bottom-6 left-0 right-0 px-6 flex items-center justify-between pointer-events-auto">
+                  <button onClick={toggleCamera} className="h-11 w-11 rounded-full bg-black/40 backdrop-blur-xl border border-white/10 text-white flex items-center justify-center hover:bg-white/10"><SwitchCamera className="h-5 w-5" /></button>
+                  <button onClick={activeTab === 'PHOTO' ? capturePhoto : (isRecording ? stopRecording : startRecording)} className="h-16 w-16 rounded-full border-[5px] border-white/20 p-1 transition-transform active:scale-90 group/shutter">
                     <div className={cn("w-full h-full transition-all duration-300 shadow-lg", activeTab === 'PHOTO' ? "bg-white rounded-full" : (isRecording ? "bg-red-500 rounded-lg scale-50" : "bg-red-500 rounded-full"))} />
                   </button>
-                  <button onClick={() => setIsCameraMode(false)} className="h-12 w-12 rounded-full bg-black/40 backdrop-blur-xl border border-white/10 text-white flex items-center justify-center hover:bg-white/10"><X className="h-6 w-6" /></button>
+                  <button onClick={() => setIsCameraMode(false)} className="h-11 w-11 rounded-full bg-black/40 backdrop-blur-xl border border-white/10 text-white flex items-center justify-center hover:bg-white/10"><X className="h-5 w-5" /></button>
                 </div>
               </div>
-              <div className="flex justify-center gap-8 px-4 py-2 bg-white/5 rounded-2xl mx-auto w-fit">
+              <div className="flex justify-center gap-6 px-4 py-2 bg-white/5 rounded-2xl mx-auto w-fit">
                 {['PHOTO', 'VIDEO'].map((mode) => (
                   <button key={mode} onClick={() => setActiveMode(mode as any)} className={cn("text-[11px] font-black tracking-[0.2em] transition-all relative py-1", activeTab === mode ? "text-primary" : "text-muted-foreground/40")}>{mode}{activeTab === mode && <div className="absolute -bottom-1 left-0 right-0 h-0.5 bg-primary rounded-full" />}</button>
                 ))}
               </div>
             </div>
           ) : uploadQueue.length === 0 ? (
-            <div className="space-y-4">
-              <div onClick={() => fileInputRef.current?.click()} className="border-2 border-dashed border-white/5 rounded-[2.5rem] p-10 sm:p-16 flex flex-col items-center justify-center gap-5 transition-all hover:bg-white/[0.02] hover:border-primary/30 group cursor-pointer">
-                <div className="w-16 h-16 rounded-[1.8rem] bg-white/5 flex items-center justify-center group-hover:scale-110 transition-transform duration-500">
-                  <ImageIcon className="h-8 w-8 text-primary" />
+            <div className="space-y-3 sm:space-y-4">
+              
+              {/* ZONA DE ARRASTRE LOCAL */}
+              <div 
+                onClick={() => fileInputRef.current?.click()} 
+                className="border-2 border-dashed border-white/10 rounded-2xl sm:rounded-3xl p-6 sm:p-10 flex flex-col items-center justify-center gap-3 sm:gap-4 transition-all hover:bg-white/[0.02] hover:border-primary/40 group cursor-pointer"
+              >
+                <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center group-hover:scale-110 transition-transform">
+                  <ImageIcon className="h-6 w-6 sm:h-7 sm:w-7 text-primary" />
                 </div>
                 <div className="text-center">
-                  <p className="text-white font-bold text-lg">Ingesta de Archivos Locales</p>
-                  <p className="text-muted-foreground text-xs mt-1">Selecciona o arrastra imágenes y videos desde tu dispositivo.</p>
-                  <div className="mt-3.5 flex items-center justify-center gap-2 flex-wrap">
-                    <Badge variant="outline" className="text-[10px] bg-primary/10 text-primary border-primary/20 py-0.5 px-2.5 rounded-full font-medium">
-                      <Sparkles className="h-3 w-3 mr-1" /> WebP / WebM Auto
-                    </Badge>
-                    <Badge variant="outline" className="text-[10px] bg-emerald-500/10 text-emerald-400 border-emerald-500/20 py-0.5 px-2.5 rounded-full font-medium">
-                      <ShieldCheck className="h-3 w-3 mr-1" /> Cifrado Zero-Knowledge
-                    </Badge>
+                  <p className="text-white font-bold text-sm sm:text-base">Archivos de tu Dispositivo</p>
+                  <p className="text-white/50 text-xs mt-0.5">Toca aquí para seleccionar fotos o videos de tu galería local.</p>
+                  <div className="mt-2.5 flex items-center justify-center gap-2 flex-wrap">
+                    <span className="text-[10px] bg-primary/10 text-primary border border-primary/20 py-0.5 px-2.5 rounded-full font-medium inline-flex items-center">
+                      <Sparkles className="h-2.5 w-2.5 mr-1" /> WebP / WebM Auto
+                    </span>
+                    <span className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 py-0.5 px-2.5 rounded-full font-medium inline-flex items-center">
+                      <ShieldCheck className="h-2.5 w-2.5 mr-1" /> Cifrado Zero-Knowledge
+                    </span>
                   </div>
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Button 
-                  variant="outline" 
+              {/* OPCIONES SECUNDARIAS: GOOGLE DRIVE Y CÁMARA */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
+                {/* TARJETA DE GOOGLE DRIVE (DESTACADA, ULTRA RESPONSIVA) */}
+                <div 
                   onClick={() => setIsDrivePickerOpen(true)} 
-                  className="h-16 rounded-3xl border-white/10 bg-white/5 hover:bg-primary/10 hover:border-primary/30 text-white font-bold flex items-center justify-center gap-3 transition-all"
+                  className="p-3.5 sm:p-4 rounded-2xl bg-gradient-to-br from-white/[0.05] to-white/[0.01] border border-white/10 hover:border-primary/40 hover:bg-white/[0.07] transition-all cursor-pointer group flex items-center justify-between shadow-sm active:scale-[0.99]"
                 >
-                  <svg className="h-6 w-6 shrink-0" viewBox="0 0 87.3 78" xmlns="http://www.w3.org/2000/svg">
-                    <path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/>
-                    <path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44c-.8 1.4-1.2 2.95-1.2 4.5h27.5z" fill="#00ac47"/>
-                    <path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.502l5.852 11.5z" fill="#ea4335"/>
-                    <path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/>
-                    <path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc"/>
-                    <path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 28h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00"/>
-                  </svg>
-                  <div className="text-left leading-tight">
-                    <p className="text-sm font-bold text-white">Google Drive</p>
-                    <p className="text-[10px] text-muted-foreground font-normal">Importar fotos y videos</p>
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-10 h-10 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                      <svg className="h-5 w-5 shrink-0" viewBox="0 0 87.3 78" xmlns="http://www.w3.org/2000/svg">
+                        <path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/>
+                        <path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44c-.8 1.4-1.2 2.95-1.2 4.5h27.5z" fill="#00ac47"/>
+                        <path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.502l5.852 11.5z" fill="#ea4335"/>
+                        <path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/>
+                        <path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc"/>
+                        <path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 28h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00"/>
+                      </svg>
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <p className="text-xs sm:text-sm font-bold text-white group-hover:text-primary transition-colors truncate">Google Drive</p>
+                        <span className="text-[8px] font-bold uppercase px-1 py-0.2 rounded bg-sky-500/15 text-sky-300 shrink-0">Cloud</span>
+                      </div>
+                      <p className="text-[11px] text-white/50 truncate mt-0.5">Importar desde la nube</p>
+                    </div>
                   </div>
-                </Button>
+                  <ChevronRight className="h-4 w-4 text-white/30 group-hover:text-primary group-hover:translate-x-0.5 transition-all shrink-0 ml-1.5" />
+                </div>
 
-                <Button 
-                  variant="outline" 
+                {/* TARJETA CÁMARA NEURAL */}
+                <div 
                   onClick={() => setIsCameraMode(true)} 
-                  className="h-16 rounded-3xl border-white/10 bg-white/5 hover:bg-white/10 text-white font-bold flex items-center justify-center gap-3 transition-all"
+                  className="p-3.5 sm:p-4 rounded-2xl bg-white/[0.03] border border-white/10 hover:border-white/20 hover:bg-white/[0.06] transition-all cursor-pointer group flex items-center justify-between shadow-sm active:scale-[0.99]"
                 >
-                  <Camera className="h-6 w-6 text-primary shrink-0" />
-                  <div className="text-left leading-tight">
-                    <p className="text-sm font-bold text-white">Cámara Neural</p>
-                    <p className="text-[10px] text-muted-foreground font-normal">Capturar foto o video</p>
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-10 h-10 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                      <Camera className="h-5 w-5 text-primary" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-xs sm:text-sm font-bold text-white group-hover:text-accent transition-colors truncate">Cámara Neural</p>
+                      <p className="text-[11px] text-white/50 truncate mt-0.5">Captura foto o video en vivo</p>
+                    </div>
                   </div>
-                </Button>
+                  <ChevronRight className="h-4 w-4 text-white/30 group-hover:text-accent group-hover:translate-x-0.5 transition-all shrink-0 ml-1.5" />
+                </div>
               </div>
             </div>
           ) : (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between p-4 bg-white/5 rounded-3xl border border-white/5">
-                <div className="flex items-center gap-4"><div className="p-3 rounded-2xl bg-accent/10 text-accent"><ShieldAlert className="h-5 w-5" /></div><div><Label className="text-sm font-bold text-white">Contenido Adulto</Label></div></div>
+            <div className="space-y-3">
+              {/* Switch Contenido Adulto Global */}
+              <div className="flex items-center justify-between p-3 sm:p-3.5 bg-white/5 rounded-2xl border border-white/5">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-xl bg-accent/10 text-accent">
+                    <ShieldAlert className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <Label className="text-xs sm:text-sm font-bold text-white">Contenido Adulto (+18)</Label>
+                    <p className="text-[10px] text-white/40">Marcar lote completo para la Bóveda Secreta</p>
+                  </div>
+                </div>
                 <Switch checked={globalAdult} onCheckedChange={(c) => { setGlobalAdult(c); setUploadQueue(prev => prev.map(f => ({ ...f, isAdultContent: c }))); }} />
               </div>
 
-              <ScrollArea className="h-[300px] pr-4">
-                <div className="space-y-3">
-                  {uploadQueue.map((item) => (
-                    <div key={item.id} className="flex items-center justify-between p-3 rounded-2xl bg-white/[0.03] border border-white/5 hover:border-white/10 transition-colors">
-                      <div className="flex items-center gap-3.5 min-w-0">
-                        <div className="w-14 h-14 rounded-xl overflow-hidden relative bg-black shrink-0 flex items-center justify-center">
-                          {item.preview ? (
-                            <img src={item.preview} className="w-full h-full object-cover" alt="" />
-                          ) : (item.mimeType || item.file?.type || '').startsWith('video/') ? (
-                            <FileVideo className="h-6 w-6 text-accent" />
-                          ) : (
-                            <FileText className="h-6 w-6 text-primary" />
-                          )}
-                          {item.status === 'uploading' && (
-                            <div className="absolute inset-0 bg-black/60 flex items-center justify-center flex-col">
-                              <Loader2 className="h-4 w-4 text-primary animate-spin" />
-                              <span className="text-[8px] font-bold text-white mt-1">{item.progress}%</span>
-                            </div>
-                          )}
-                          {item.status === 'completed' && (
-                            <div className="absolute inset-0 bg-green-500/80 flex items-center justify-center">
-                              <CheckCircle2 className="h-6 w-6 text-white" />
-                            </div>
-                          )}
-                          {item.status === 'error' && (
-                            <div className="absolute inset-0 bg-red-500/80 flex items-center justify-center">
-                              <AlertCircle className="h-6 w-6 text-white" />
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="min-w-0 flex-1">
-                          <p className="text-xs font-bold text-white truncate" title={item.name}>{item.name}</p>
-                          <div className="flex items-center gap-2 mt-1">
-                            {item.isFromDrive && (
-                              <Badge className="bg-sky-500/20 text-sky-300 border-none text-[8px] px-1.5 py-0 h-4">
-                                Google Drive
-                              </Badge>
-                            )}
-                            <span className="text-[10px] text-muted-foreground font-mono">
-                              {item.size ? formatBytes(item.size) : 'Desconocido'}
-                            </span>
+              {/* Lista de Archivos en Cola */}
+              <div className="space-y-2">
+                {uploadQueue.map((item) => (
+                  <div key={item.id} className="flex items-center justify-between p-2.5 sm:p-3 rounded-xl bg-white/[0.03] border border-white/5 hover:border-white/10 transition-colors gap-2">
+                    <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
+                      <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-xl overflow-hidden relative bg-black shrink-0 flex items-center justify-center border border-white/5">
+                        {item.preview ? (
+                          <img src={item.preview} className="w-full h-full object-cover" alt="" />
+                        ) : (item.mimeType || item.file?.type || '').startsWith('video/') ? (
+                          <FileVideo className="h-5 w-5 text-accent" />
+                        ) : (
+                          <FileText className="h-5 w-5 text-primary" />
+                        )}
+                        {item.status === 'uploading' && (
+                          <div className="absolute inset-0 bg-black/60 flex items-center justify-center flex-col">
+                            <Loader2 className="h-4 w-4 text-primary animate-spin" />
+                            <span className="text-[8px] font-bold text-white mt-0.5">{item.progress}%</span>
                           </div>
-                        </div>
+                        )}
+                        {item.status === 'completed' && (
+                          <div className="absolute inset-0 bg-green-500/80 flex items-center justify-center">
+                            <CheckCircle2 className="h-5 w-5 text-white" />
+                          </div>
+                        )}
+                        {item.status === 'error' && (
+                          <div className="absolute inset-0 bg-red-500/80 flex items-center justify-center">
+                            <AlertCircle className="h-5 w-5 text-white" />
+                          </div>
+                        )}
                       </div>
 
-                      <div className="flex items-center gap-2 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setUploadQueue(prev => prev.map(f => f.id === item.id ? { ...f, isAdultContent: !f.isAdultContent } : f));
-                          }}
-                          disabled={isUploading}
-                          title={item.isAdultContent ? 'Marcado como +18' : 'Marcar como +18'}
-                          className={cn(
-                            "px-2.5 py-1.5 rounded-xl text-[10px] font-bold transition-all border flex items-center gap-1.5",
-                            item.isAdultContent 
-                              ? "bg-accent/20 border-accent text-accent shadow-sm" 
-                              : "bg-white/5 border-white/10 text-muted-foreground hover:text-white"
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-bold text-white truncate" title={item.name}>{item.name}</p>
+                        <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                          {item.isFromDrive && (
+                            <span className="bg-sky-500/20 text-sky-300 text-[8px] font-bold px-1.5 py-0.5 rounded flex items-center gap-1">
+                              Drive
+                            </span>
                           )}
-                        >
-                          <ShieldAlert className="h-3 w-3" />
-                          <span>{item.isAdultContent ? '+18' : 'Normal'}</span>
-                        </button>
-
-                        <Button 
-                          variant="ghost" 
-                          size="icon" 
-                          onClick={() => setUploadQueue(prev => prev.filter(f => f.id !== item.id))} 
-                          disabled={isUploading} 
-                          className="text-muted-foreground hover:text-red-400 h-8 w-8 rounded-lg"
-                        >
-                          <X className="h-4 w-4" />
-                        </Button>
+                          <span className="text-[10px] text-white/50 font-mono">
+                            {item.size ? formatBytes(item.size) : 'Desconocido'}
+                          </span>
+                        </div>
                       </div>
                     </div>
-                  ))}
-                </div>
-              </ScrollArea>
+
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setUploadQueue(prev => prev.map(f => f.id === item.id ? { ...f, isAdultContent: !f.isAdultContent } : f));
+                        }}
+                        disabled={isUploading}
+                        title={item.isAdultContent ? 'Marcado como +18' : 'Marcar como +18'}
+                        className={cn(
+                          "px-2 py-1 rounded-lg text-[10px] font-bold transition-all border flex items-center gap-1",
+                          item.isAdultContent 
+                            ? "bg-accent/20 border-accent text-accent shadow-sm" 
+                            : "bg-white/5 border-white/10 text-white/50 hover:text-white"
+                        )}
+                      >
+                        <ShieldAlert className="h-3 w-3" />
+                        <span>{item.isAdultContent ? '+18' : 'Normal'}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setUploadQueue(prev => prev.filter(f => f.id !== item.id))} 
+                        disabled={isUploading} 
+                        className="text-white/40 hover:text-red-400 h-7 w-7 rounded-lg flex items-center justify-center hover:bg-white/5 transition-colors"
+                        aria-label="Quitar de la lista"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
+          {/* Progreso Global de Subida */}
           {isUploading && (
-            <div className="space-y-3 pt-2">
-              <div className="flex justify-between text-[10px] font-black text-muted-foreground uppercase tracking-[0.2em]"><span>Sincronizando...</span><span>{overallProgress}%</span></div>
-              <Progress value={overallProgress} className="h-1.5 bg-white/5" />
+            <div className="space-y-2 pt-2">
+              <div className="flex justify-between text-[10px] font-bold text-white/60 uppercase tracking-wider">
+                <span>Sincronizando con el servidor...</span>
+                <span>{overallProgress}%</span>
+              </div>
+              <Progress value={overallProgress} className="h-1.5 bg-white/10" />
             </div>
           )}
         </div>
 
-        <DialogFooter className="p-6 bg-white/[0.02] border-t border-white/5 flex-row gap-3">
-          <Button variant="ghost" onClick={handleClose} disabled={isUploading} className="flex-1 rounded-2xl text-white">Cerrar</Button>
-          {!isCameraMode && uploadQueue.length > 0 && <Button onClick={handleBatchUpload} disabled={isUploading} className="flex-[2] bg-primary text-white rounded-2xl font-bold shadow-xl">{isUploading ? <Loader2 className="h-5 w-5 animate-spin mr-2" /> : <Zap className="mr-2 h-5 w-5" />} Completar Ingesta</Button>}
-        </DialogFooter>
-        <input type="file" ref={fileInputRef} className="hidden" accept="image/*,video/*" multiple onChange={(e) => { if(e.target.files) { processFiles(Array.from(e.target.files)); e.target.value = ''; } }} />
+        {/* FOOTER ACCIONES: STICKY CON BOTÓN CONFIRMAR */}
+        <div className="shrink-0 p-3.5 sm:p-5 bg-[#0a0a0c]/95 backdrop-blur-xl border-t border-white/10 flex items-center justify-between gap-3 pb-[max(0.875rem,env(safe-area-inset-bottom))]">
+          <Button 
+            variant="ghost" 
+            size="sm"
+            onClick={handleClose} 
+            disabled={isUploading} 
+            className="rounded-xl text-white/70 hover:text-white text-xs h-10 px-4"
+          >
+            Cerrar
+          </Button>
+
+          {!isCameraMode && uploadQueue.length > 0 && (
+            <Button 
+              onClick={handleBatchUpload} 
+              disabled={isUploading} 
+              className="bg-primary hover:bg-primary/90 text-white rounded-xl sm:rounded-2xl font-bold px-5 sm:px-6 h-10 sm:h-11 shadow-lg shadow-primary/25 text-xs sm:text-sm flex-1 sm:flex-none justify-center"
+            >
+              {isUploading ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                  Procesando...
+                </>
+              ) : (
+                <>
+                  <Zap className="mr-1.5 h-4 w-4" />
+                  Completar Ingesta ({uploadQueue.length})
+                </>
+              )}
+            </Button>
+          )}
+        </div>
+
+        <input 
+          type="file" 
+          ref={fileInputRef} 
+          className="hidden" 
+          accept="image/*,video/*" 
+          multiple 
+          onChange={(e) => { 
+            if(e.target.files) { 
+              processFiles(Array.from(e.target.files)); 
+              e.target.value = ''; 
+            } 
+          }} 
+        />
       </DialogContent>
 
       <GoogleDrivePicker
         isOpen={isDrivePickerOpen}
         onClose={() => setIsDrivePickerOpen(false)}
         userId={user?.id}
+        targetAlbumId={defaultAlbumId}
         onDriveFilesSelected={handleDriveFilesSelected}
       />
     </Dialog>
   );
 }
+

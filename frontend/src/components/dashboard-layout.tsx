@@ -389,10 +389,18 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       }
     } else if (mediaId) idsToLink = [mediaId];
 
-    if (idsToLink.length > 0 && user) {
+    if (idsToLink.length > 0) {
+      const activeUid = user?.id || (typeof window !== 'undefined' && localStorage.getItem('ps_active_session') ? JSON.parse(localStorage.getItem('ps_active_session') || '{}')?.id : null);
       try {
-        await addMultipleToAlbum(albumId, user.id, idsToLink);
-        toast({ title: "Vínculos Creados", description: `${idsToLink.length} activos orquestados.` });
+        await addMultipleToAlbum(albumId, activeUid, idsToLink);
+        setAlbums(prev => prev.map(a => {
+          if (a.id === albumId) {
+            const curIds = Array.isArray(a.mediaIds) ? a.mediaIds : [];
+            return { ...a, mediaIds: Array.from(new Set([...curIds, ...idsToLink])) };
+          }
+          return a;
+        }));
+        toast({ title: "Vínculos Creados", description: `${idsToLink.length} activos orquestados en la colección.` });
       } catch (err) { 
         console.error("Error al añadir múltiples medios al álbum:", err);
         toast({ title: "Error", variant: "destructive" }); 

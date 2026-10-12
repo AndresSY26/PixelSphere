@@ -69,6 +69,7 @@ export const googleSignIn = async (): Promise<{ user: FirebaseUser; accessToken:
     }
 
     cachedAccessToken = credential.accessToken;
+    setAccessToken(credential.accessToken);
     return { user: result.user, accessToken: cachedAccessToken };
   } catch (error: any) {
     if (
