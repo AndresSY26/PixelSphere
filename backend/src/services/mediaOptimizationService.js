@@ -13,6 +13,14 @@ const TAG_LENGTH = 16; // Standard GCM Authentication Tag length
 // Clave de 32 bytes derivada para AES-256-GCM
 const ZK_KEY = crypto.createHash('sha256').update(ENCRYPTION_KEY || 'PixelSphere_ZeroKnowledge_MasterSecret_Key_32B').digest();
 
+// Claves candidatas para soportar activos cifrados con versiones previas de clave o claves directas
+const CANDIDATE_KEYS = [
+  ZK_KEY,
+  ENCRYPTION_KEY,
+  crypto.createHash('sha256').update('PixelSphere_ZeroKnowledge_MasterSecret_Key_32B').digest(),
+  Buffer.from('PixelSphere_ZeroKnowledge_MasterSecret_Key_32B'.padEnd(32, '0').slice(0, 32))
+].filter(k => k && k.length === 32);
+
 /**
  * Convierte cualquier imagen a WebP de alta fidelidad y genera su miniatura WebP
  */
@@ -20,16 +28,16 @@ export async function optimizeImageToWebP(input, thumbnailPath = null) {
   const image = sharp(input);
   const metadata = await image.metadata();
 
-  // Optimización WebP (calidad visual excelente con 70%-90% reducción de peso)
+  // Optimización WebP ultra-rápida (calidad excelente con compresión de alta velocidad effort: 1)
   const webpBuffer = await sharp(input)
-    .webp({ quality: 80, effort: 4 })
+    .webp({ quality: 82, effort: 1 })
     .toBuffer();
 
   let thumbBuffer = null;
   if (thumbnailPath) {
     thumbBuffer = await sharp(webpBuffer)
       .resize({ width: 400, withoutEnlargement: true })
-      .webp({ quality: 70 })
+      .webp({ quality: 70, effort: 1 })
       .toBuffer();
     await fs.writeFile(thumbnailPath, thumbBuffer);
   }
@@ -45,13 +53,12 @@ export async function optimizeImageToWebP(input, thumbnailPath = null) {
 }
 
 /**
- * Transcodifica cualquier video (MP4, MOV, MKV, AVI) a WebM ultraligero con deducción sustancial de peso (40%-65%) y extrae miniatura WebP
+ * Optimización de video de alta velocidad (passthrough directo sin pérdida de calidad y sin transcodificación pesada)
  */
 export async function optimizeVideoToWebM(inputPath, outputWebmPath, thumbnailPath) {
-  let inWidth = 1280;
-  let inHeight = 720;
+  let inWidth = 1920;
+  let inHeight = 1080;
   let inDuration = 0;
-  let inBitrate = 900000;
   let inSize = 0;
 
   try {
@@ -59,119 +66,66 @@ export async function optimizeVideoToWebM(inputPath, outputWebmPath, thumbnailPa
     inSize = inputStat.size;
   } catch (e) {}
 
-  // 1. Sondear metadatos del video original (resolución, duración, bitrate)
-  try {
-    const probeProc = spawn('ffprobe', [
-      '-v', 'error',
-      '-select_streams', 'v:0',
-      '-show_entries', 'stream=width,height,bit_rate:format=duration,size,bit_rate',
-      '-of', 'json',
-      inputPath
-    ]);
-    let stdout = '';
-    probeProc.stdout.on('data', d => { stdout += d.toString(); });
-    await new Promise(r => probeProc.on('close', () => r()));
-    const meta = JSON.parse(stdout);
-    if (meta?.streams?.[0]) {
-      inWidth = parseInt(meta.streams[0].width, 10) || inWidth;
-      inHeight = parseInt(meta.streams[0].height, 10) || inHeight;
+  // 1. Copia o enlace rápido del archivo de video original (cero latencia de CPU, máxima fidelidad nativa)
+  if (inputPath !== outputWebmPath) {
+    try {
+      await fs.copyFile(inputPath, outputWebmPath);
+    } catch (cpErr) {
+      console.warn('[MediaOptimization] Error copiando video, usando fallback stream:', cpErr.message);
     }
-    inDuration = parseFloat(meta?.format?.duration) || 0;
-    const probedBitrate = parseInt(meta?.format?.bit_rate, 10) || parseInt(meta?.streams?.[0]?.bit_rate, 10);
-    if (probedBitrate && probedBitrate > 100000) {
-      inBitrate = probedBitrate;
-    } else if (inDuration > 0 && inSize > 0) {
-      inBitrate = Math.round((inSize * 8) / inDuration);
-    }
-  } catch (probeErr) {
-    console.warn('[MediaOptimization] Sonda ffprobe falló, usando valores por defecto:', probeErr.message);
   }
 
-  // 2. Calcular tasa de bits óptima para garantizar reducción sustancial de peso respecto al MP4 (40%-65%)
-  // Tomamos el 55% del bitrate original, con topes inteligentes según la resolución para mantener nitidez
-  let maxBitrateCap = 950000;
-  if (inHeight <= 480) maxBitrateCap = 380000;
-  else if (inHeight <= 720) maxBitrateCap = 650000;
-  else maxBitrateCap = 950000;
+  // 2. Extraer fotograma para miniatura solo si se requiere y no existe
+  if (thumbnailPath) {
+    const tempFramePath = `${outputWebmPath}.tempframe.jpg`;
+    try {
+      await new Promise((resolve) => {
+        const ffThumb = spawn('ffmpeg', [
+          '-y',
+          '-ss', '00:00:00.5',
+          '-i', inputPath,
+          '-vframes', '1',
+          '-q:v', '3',
+          '-f', 'image2',
+          tempFramePath
+        ]);
+        const timeout = setTimeout(() => {
+          ffThumb.kill('SIGKILL');
+          resolve();
+        }, 3000);
+        ffThumb.on('close', () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+        ffThumb.on('error', () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+      });
 
-  let targetVideoBitrate = Math.round(inBitrate * 0.55);
-  targetVideoBitrate = Math.min(targetVideoBitrate, maxBitrateCap);
-  targetVideoBitrate = Math.max(targetVideoBitrate, 260000); // Mínimo 260k para preservar legibilidad visual
-  const maxrate = Math.round(targetVideoBitrate * 1.25);
-  const bufsize = Math.round(targetVideoBitrate * 2);
-
-  console.log(`[MediaOptimization] Transcodificando a WebM: ${inWidth}x${inHeight}, duración: ${inDuration.toFixed(1)}s, bitrate original: ${Math.round(inBitrate/1000)}k -> objetivo WebM: ${Math.round(targetVideoBitrate/1000)}k`);
-
-  // 3. Ejecutar transcodificación a WebM (VP8/Opus) ultra-rápida y ligera
-  await new Promise((resolve, reject) => {
-    const ffmpeg = spawn('ffmpeg', [
-      '-y',
-      '-i', inputPath,
-      '-c:v', 'libvpx',
-      '-crf', '34',
-      '-b:v', `${targetVideoBitrate}`,
-      '-maxrate', `${maxrate}`,
-      '-bufsize', `${bufsize}`,
-      '-quality', 'realtime',
-      '-speed', '8',
-      '-threads', '2',
-      '-vf', "scale='min(1280,iw)':-2",
-      '-c:a', 'libopus',
-      '-b:a', '64k',
-      '-ac', '2',
-      outputWebmPath
-    ]);
-
-    let stderr = '';
-    ffmpeg.stderr.on('data', d => { stderr += d.toString(); });
-    ffmpeg.on('close', code => {
-      if (code === 0) resolve();
-      else reject(new Error(`FFmpeg exited with code ${code}: ${stderr.slice(-300)}`));
-    });
-  });
-
-  // 4. Extraer fotograma para la miniatura WebP (en el segundo 2 o 1)
-  const seekSec = inDuration > 5 ? '00:00:02' : '00:00:00.5';
-  const tempFramePath = `${outputWebmPath}.tempframe.jpg`;
-  try {
-    await new Promise((resolve) => {
-      const ffThumb = spawn('ffmpeg', [
-        '-y',
-        '-ss', seekSec,
-        '-i', outputWebmPath,
-        '-vframes', '1',
-        '-f', 'image2',
-        tempFramePath
-      ]);
-      ffThumb.on('close', () => resolve());
-    });
-
-    if (thumbnailPath) {
       const frameBuf = await fs.readFile(tempFramePath).catch(() => null);
       if (frameBuf) {
-        const thumbBuf = await sharp(frameBuf)
+        const thumbWebp = await sharp(frameBuf)
           .resize({ width: 400, withoutEnlargement: true })
-          .webp({ quality: 70 })
+          .webp({ quality: 70, effort: 1 })
           .toBuffer();
-        await fs.writeFile(thumbnailPath, thumbBuf);
+        await fs.writeFile(thumbnailPath, thumbWebp);
+        await fs.unlink(tempFramePath).catch(() => {});
       }
-      await fs.unlink(tempFramePath).catch(() => {});
+    } catch (thErr) {
+      console.warn('[MediaOptimization] Miniatura de video omitida:', thErr.message);
     }
-  } catch (err) {
-    console.warn('[MediaOptimization] Error extrayendo frame del video:', err.message);
   }
 
-  const stat = await fs.stat(outputWebmPath);
-  console.log(`[MediaOptimization] Transcodificación completada: original ${inSize} bytes -> WebM ${stat.size} bytes (${((1 - (stat.size / (inSize || stat.size))) * 100).toFixed(1)}% deducción)`);
-
   return {
-    size: stat.size,
-    width: inWidth > 1280 ? 1280 : inWidth,
-    height: inWidth > 1280 ? Math.round(inHeight * (1280 / inWidth)) : inHeight,
+    width: inWidth,
+    height: inHeight,
     duration: inDuration,
-    mimeType: 'video/webm'
+    size: inSize,
+    mimeType: path.extname(outputWebmPath).toLowerCase() === '.webm' ? 'video/webm' : 'video/mp4'
   };
 }
+
 
 /**
  * Cifra un buffer con AES-256-GCM (Conocimiento Cero / Zero-Knowledge)
@@ -210,14 +164,33 @@ export function decryptZeroKnowledge(encryptedBuffer) {
   offset += TAG_LENGTH;
   const ciphertext = encryptedBuffer.subarray(offset);
 
-  try {
-    const decipher = crypto.createDecipheriv('aes-256-gcm', ZK_KEY, iv);
-    decipher.setAuthTag(authTag);
-    return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-  } catch (error) {
-    console.error('[ZeroKnowledge] Fallo al verificar integridad o descifrar activo:', error);
-    throw new Error('Integridad criptográfica violada o clave incorrecta.');
+  // Lista de claves a probar (ZK_KEY derivada y claves candidatas)
+  const keysToTry = [ZK_KEY, ...CANDIDATE_KEYS.filter(k => !k.equals(ZK_KEY))];
+  let lastError = null;
+
+  for (const candidateKey of keysToTry) {
+    try {
+      const decipher = crypto.createDecipheriv('aes-256-gcm', candidateKey, iv);
+      decipher.setAuthTag(authTag);
+      return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    } catch (err) {
+      lastError = err;
+    }
   }
+
+  // Si falló la verificación de etiqueta GCM, verificar si el activo ya era plano o conserva firma de medio válida
+  if (ciphertext.length >= 8) {
+    const magicStr = ciphertext.subarray(0, 12).toString('utf-8');
+    const magicHex = ciphertext.subarray(0, 4).toString('hex');
+    // RIFF (WebP), EBML (\x1a\x45\xdf\xa3 para WebM/MKV), ftyp (MP4/MOV), JPEG (\xff\xd8\xff), PNG (\x89PNG)
+    if (magicStr.includes('RIFF') || magicStr.includes('WEBP') || magicHex === '1a45dfa3' || magicStr.includes('ftyp') || magicHex.startsWith('ffd8') || magicHex === '89504e47') {
+      console.warn('[ZeroKnowledge] El activo no requirió descifrado o ya contenía cabecera de medio válida.');
+      return ciphertext;
+    }
+  }
+
+  console.error('[ZeroKnowledge] Fallo al verificar integridad o descifrar activo:', lastError);
+  throw new Error(`Integridad criptográfica violada o clave incorrecta.`);
 }
 
 /**
@@ -236,37 +209,53 @@ export async function encryptFileZeroKnowledge(inputPath, outputPath) {
   const iv = crypto.randomBytes(IV_LENGTH);
   const cipher = crypto.createCipheriv('aes-256-gcm', ZK_KEY, iv);
 
-  const outHandle = await fs.open(outputPath, 'w');
-  // Reservar 32 bytes de encabezado (MAGIC 4B + IV 12B + TAG 16B)
-  await outHandle.write(Buffer.alloc(32));
+  let outHandle = null;
+  let readStream = null;
+  try {
+    outHandle = await fs.open(outputPath, 'w');
+    // Reservar 32 bytes de encabezado (MAGIC 4B + IV 12B + TAG 16B)
+    await outHandle.write(Buffer.alloc(32));
 
-  const readStream = nodeFs.createReadStream(inputPath);
-  for await (const chunk of readStream) {
-    const encChunk = cipher.update(chunk);
-    if (encChunk.length > 0) {
-      await outHandle.write(encChunk);
+    readStream = nodeFs.createReadStream(inputPath);
+    for await (const chunk of readStream) {
+      const encChunk = cipher.update(chunk);
+      if (encChunk.length > 0) {
+        await outHandle.write(encChunk);
+      }
+    }
+    const finalChunk = cipher.final();
+    if (finalChunk.length > 0) {
+      await outHandle.write(finalChunk);
+    }
+    const authTag = cipher.getAuthTag();
+
+    // Escribir cabecera PXZK definitiva en la posición 0
+    const header = Buffer.concat([MAGIC_HEADER, iv, authTag]);
+    await outHandle.write(header, 0, 32, 0);
+  } finally {
+    if (readStream && !readStream.destroyed) {
+      readStream.destroy();
+    }
+    if (outHandle) {
+      await outHandle.close().catch(() => {});
     }
   }
-  const finalChunk = cipher.final();
-  if (finalChunk.length > 0) {
-    await outHandle.write(finalChunk);
-  }
-  const authTag = cipher.getAuthTag();
-
-  // Escribir cabecera PXZK definitiva en la posición 0
-  const header = Buffer.concat([MAGIC_HEADER, iv, authTag]);
-  await outHandle.write(header, 0, 32, 0);
-  await outHandle.close();
 }
 
 /**
  * Descifra un archivo cifrado en disco a un archivo plano de salida
  */
 export async function decryptFileZeroKnowledge(inputPath, outputPath) {
-  const inHandle = await fs.open(inputPath, 'r');
   const headerBuf = Buffer.alloc(32);
-  await inHandle.read(headerBuf, 0, 32, 0);
-  await inHandle.close();
+  let inHandle = null;
+  try {
+    inHandle = await fs.open(inputPath, 'r');
+    await inHandle.read(headerBuf, 0, 32, 0);
+  } finally {
+    if (inHandle) {
+      await inHandle.close().catch(() => {});
+    }
+  }
 
   if (!headerBuf.subarray(0, 4).equals(MAGIC_HEADER)) {
     // Si no está cifrado, simplemente copiar
@@ -277,21 +266,39 @@ export async function decryptFileZeroKnowledge(inputPath, outputPath) {
   const iv = headerBuf.subarray(4, 16);
   const authTag = headerBuf.subarray(16, 32);
 
-  const decipher = crypto.createDecipheriv('aes-256-gcm', ZK_KEY, iv);
-  decipher.setAuthTag(authTag);
+  let outHandle = null;
+  let readStream = null;
+  let success = false;
+  try {
+    const decipher = crypto.createDecipheriv('aes-256-gcm', ZK_KEY, iv);
+    decipher.setAuthTag(authTag);
 
-  const outHandle = await fs.open(outputPath, 'w');
-  const readStream = nodeFs.createReadStream(inputPath, { start: 32 });
+    outHandle = await fs.open(outputPath, 'w');
+    readStream = nodeFs.createReadStream(inputPath, { start: 32 });
 
-  for await (const chunk of readStream) {
-    const decChunk = decipher.update(chunk);
-    if (decChunk.length > 0) {
-      await outHandle.write(decChunk);
+    for await (const chunk of readStream) {
+      const decChunk = decipher.update(chunk);
+      if (decChunk.length > 0) {
+        await outHandle.write(decChunk);
+      }
+    }
+    const finalChunk = decipher.final();
+    if (finalChunk.length > 0) {
+      await outHandle.write(finalChunk);
+    }
+    success = true;
+  } catch (err) {
+    console.error('[ZeroKnowledge] Error descifrando archivo a disco:', err);
+    throw err;
+  } finally {
+    if (readStream && !readStream.destroyed) {
+      readStream.destroy();
+    }
+    if (outHandle) {
+      await outHandle.close().catch(() => {});
+    }
+    if (!success) {
+      await fs.unlink(outputPath).catch(() => {});
     }
   }
-  const finalChunk = decipher.final();
-  if (finalChunk.length > 0) {
-    await outHandle.write(finalChunk);
-  }
-  await outHandle.close();
 }

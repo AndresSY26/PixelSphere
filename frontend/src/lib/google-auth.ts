@@ -9,12 +9,15 @@ import {
 } from 'firebase/auth';
 import firebaseConfig from '../firebase-applet-config.json';
 
+const isRealValue = (val?: string) => 
+  typeof val === 'string' && val.trim().length > 0 && !val.includes('YOUR_') && !val.includes('your_');
+
 const effectiveFirebaseConfig = {
   ...firebaseConfig,
-  apiKey: (typeof import.meta !== 'undefined' && import.meta.env?.VITE_FIREBASE_API_KEY) || firebaseConfig.apiKey,
-  projectId: (typeof import.meta !== 'undefined' && import.meta.env?.VITE_FIREBASE_PROJECT_ID) || firebaseConfig.projectId,
-  authDomain: (typeof import.meta !== 'undefined' && import.meta.env?.VITE_FIREBASE_AUTH_DOMAIN) || firebaseConfig.authDomain,
-  storageBucket: (typeof import.meta !== 'undefined' && import.meta.env?.VITE_FIREBASE_STORAGE_BUCKET) || firebaseConfig.storageBucket,
+  apiKey: (isRealValue(import.meta.env?.VITE_FIREBASE_API_KEY) ? import.meta.env.VITE_FIREBASE_API_KEY : '') || (isRealValue(firebaseConfig.apiKey) ? firebaseConfig.apiKey : ''),
+  projectId: (isRealValue(import.meta.env?.VITE_FIREBASE_PROJECT_ID) ? import.meta.env.VITE_FIREBASE_PROJECT_ID : '') || (isRealValue(firebaseConfig.projectId) ? firebaseConfig.projectId : ''),
+  authDomain: (isRealValue(import.meta.env?.VITE_FIREBASE_AUTH_DOMAIN) ? import.meta.env.VITE_FIREBASE_AUTH_DOMAIN : '') || (isRealValue(firebaseConfig.authDomain) ? firebaseConfig.authDomain : ''),
+  storageBucket: (isRealValue(import.meta.env?.VITE_FIREBASE_STORAGE_BUCKET) ? import.meta.env.VITE_FIREBASE_STORAGE_BUCKET : '') || (isRealValue(firebaseConfig.storageBucket) ? firebaseConfig.storageBucket : ''),
 };
 
 const app = !getApps().length ? initializeApp(effectiveFirebaseConfig) : getApp();

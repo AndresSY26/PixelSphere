@@ -14,9 +14,9 @@ const connectionString = process.env.DATABASE_URL || 'postgresql://neondb_owner:
 export const pool = new pg.Pool({
   connectionString,
   ssl: { rejectUnauthorized: false },
-  max: 5,
-  idleTimeoutMillis: 10000,
-  connectionTimeoutMillis: 5000,
+  max: 10,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 10000,
 });
 
 pool.on('error', (err) => {
@@ -163,6 +163,7 @@ export async function initDatabase() {
   await query('CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);').catch(() => {});
   await query('CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_id);').catch(() => {});
   await query('CREATE INDEX IF NOT EXISTS idx_payments_created ON payments(created_at DESC);').catch(() => {});
+  await query('CREATE INDEX IF NOT EXISTS idx_media_user_active_size ON media(user_id, size) WHERE is_deleted = false;').catch(() => {});
 
   // 4. Normalizar y forzar cuota de almacenamiento a 3 GB (3,221,225,472 B) para usuarios gratuitos
   await query(`

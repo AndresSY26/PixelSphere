@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import sharp from 'sharp';
-import { saveMediaMetadata } from '../services/storageService.js';
+import { saveMediaMetadata, checkUserStorageQuota } from '../services/storageService.js';
 import { broadcastNeuralEvent } from '../services/eventService.js';
 import { UPLOADS_DIR } from '../config/constants.js';
 import { uploadToCloudStorage } from '../services/cloudStorageService.js';
@@ -104,6 +104,18 @@ export async function importFromCloud(req, res) {
     }
 
     const buffer = Buffer.from(await response.arrayBuffer());
+
+    // Verificación estricta de cuota de 3 GB
+    const quotaCheck = await checkUserStorageQuota(userId, buffer.length);
+    if (!quotaCheck.allowed) {
+      return res.status(403).json({
+        error: quotaCheck.error || 'Has superado el límite de almacenamiento de 3 GB de tu plan.',
+        code: 'STORAGE_QUOTA_EXCEEDED',
+        quota: quotaCheck.quota,
+        used: quotaCheck.used
+      });
+    }
+
     const fileId = Math.random().toString(36).substring(2, 11);
     const type = mimeType && mimeType.startsWith('video/') ? 'video' : 'image';
 
@@ -166,6 +178,17 @@ export async function importDriveBatch(req, res) {
 
     console.log(`[DriveBatch] Iniciando ingesta masiva de ${items.length} activos para usuario ${userId}${albumId ? ` en álbum ${albumId}` : ''}...`);
 
+    // Verificación previa de cuota de 3 GB
+    const initialQuotaCheck = await checkUserStorageQuota(userId, 0);
+    if (!initialQuotaCheck.allowed) {
+      return res.status(403).json({
+        error: `Has alcanzado el límite de almacenamiento de 3 GB de tu plan gratuito (${(initialQuotaCheck.used / (1024 * 1024 * 1024)).toFixed(2)} GB usados). No es posible importar más contenido. Libera espacio o mejora tu plan.`,
+        code: 'STORAGE_QUOTA_EXCEEDED',
+        quota: initialQuotaCheck.quota,
+        used: initialQuotaCheck.used
+      });
+    }
+
     const results = [];
     const errors = [];
 
@@ -177,6 +200,15 @@ export async function importDriveBatch(req, res) {
       const type = isVideo ? 'video' : (item.mimeType && item.mimeType.startsWith('image/')) ? 'image' : 'file';
       const isPrivate = Boolean(item.isPrivate);
       const isAdultContent = Boolean(item.isAdult || item.isAdultContent);
+
+      const itemSizeEst = item.size ? parseInt(item.size, 10) : 0;
+      if (itemSizeEst > 0) {
+        const check = await checkUserStorageQuota(userId, itemSizeEst);
+        if (!check.allowed) {
+          errors.push({ id: item.id, name: filename, error: 'Límite de 3 GB alcanzado. Archivo omitido.' });
+          break;
+        }
+      }
 
       try {
         console.log(`[DriveBatch] [${i + 1}/${items.length}] Transfiriendo a disco: ${filename} (ID: ${item.id})`);
@@ -200,7 +232,7 @@ export async function importDriveBatch(req, res) {
 
         let cloudStoragePath = null;
         let cloudUrl = null;
-        let finalThumbnailUrl = publicPath;
+        let finalThumbnailUrl = '';
         let width = null;
         let height = null;
         let duration = null;
@@ -213,49 +245,39 @@ export async function importDriveBatch(req, res) {
         const thumbDiskPath = path.join(thumbDir, thumbName);
 
         if (isVideo) {
-          // 1. Descargar a archivo temporal bruto
-          const rawTempPath = path.join(userPath, `temp_${fileId}_raw.mp4`);
-          const fileStream = nodeFs.createWriteStream(rawTempPath);
+          // 1. Descargar video directamente a la ruta de disco para streaming
+          const fileStream = nodeFs.createWriteStream(filePath);
           await pipeline(Readable.fromWeb(driveRes.body), fileStream);
 
-          // 2. Transcodificar a WebM ultrarrápido con deducción sustancial de peso (40%-65%) y generar miniatura WebP
-          console.log(`[DriveBatch] Transcodificando ${filename} a WebM con alta compresión...`);
-          const opt = await optimizeVideoToWebM(rawTempPath, filePath, thumbDiskPath);
-          await fs.unlink(rawTempPath).catch(() => {});
-          finalSize = opt.size;
-          width = opt.width;
-          height = opt.height;
-          duration = opt.duration;
-          console.log(`[DriveBatch] Video transcodificado a WebM con éxito: ${opt.size} bytes (${opt.width}x${opt.height})`);
+          try {
+            const fileStat = await fs.stat(filePath).catch(() => ({ size: 0 }));
+            finalSize = fileStat.size || 0;
+          } catch (e) {}
 
-          finalThumbnailUrl = `/uploads/${userId}/thumbnails/${thumbName}`;
-          if (nodeFs.existsSync(thumbDiskPath)) {
-            const rawThumb = await fs.readFile(thumbDiskPath);
-            const encThumb = encryptZeroKnowledge(rawThumb);
-            await fs.writeFile(thumbDiskPath, encThumb);
-            uploadToCloudStorage(`thumbnails/${userId}/${thumbName}.enc`, encThumb).catch((e) => {
-              console.warn('[DriveBatch] Fallo subiendo miniatura a Firebase:', e.message);
-            });
+          // Verificar cuota real tras descargar
+          const postCheck = await checkUserStorageQuota(userId, finalSize);
+          if (!postCheck.allowed) {
+            await fs.unlink(filePath).catch(() => {});
+            errors.push({ id: item.id, name: filename, error: 'Límite de 3 GB alcanzado.' });
+            break;
           }
 
-          // 3. Cifrar archivo WebM con Zero-Knowledge y subir a Firebase Storage
+          // NO asignar la ruta del video pesado como miniatura para evitar congelar la galería
+          finalThumbnailUrl = '';
+
+          // 2. Cifrar archivo con Zero-Knowledge y subir a Firebase Storage (ÚNICAMENTE en media/)
           const encVideoPath = `${filePath}.enc`;
           try {
-            console.log(`[DriveBatch] Cifrando WebM ${diskName} con AES-256-GCM Zero-Knowledge...`);
             await encryptFileZeroKnowledge(filePath, encVideoPath);
             cloudStoragePath = `media/${userId}/video/${diskName}.enc`;
-            console.log(`[DriveBatch] Subiendo WebM cifrado (${opt.size} bytes) a Firebase Storage...`);
             const uploadRes = await uploadToCloudStorage(cloudStoragePath, encVideoPath);
             cloudUrl = uploadRes.downloadUrl;
-            console.log(`[DriveBatch] WebM subido exitosamente a Firebase Storage! URL disponible.`);
             await fs.unlink(filePath).catch(() => {});
             await fs.unlink(encVideoPath).catch(() => {});
-            await fs.unlink(thumbDiskPath).catch(() => {});
           } catch (upErr) {
-            console.warn('[DriveBatch] Fallo al subir WebM a Firebase Storage:', upErr.message);
+            console.warn('[DriveBatch] Fallo al subir video a Firebase Storage:', upErr.message);
             await fs.unlink(filePath).catch(() => {});
             await fs.unlink(encVideoPath).catch(() => {});
-            await fs.unlink(thumbDiskPath).catch(() => {});
           }
         } else {
           // Descargar archivo / imagen directamente a archivo temporal
@@ -275,19 +297,16 @@ export async function importDriveBatch(req, res) {
               width = meta.width || null;
               height = meta.height || null;
 
-              // Optimización a WebP de alta fidelidad
-              const webpBuffer = await sharp(rawBuffer).webp({ quality: 82 }).toBuffer();
+              // Optimización a WebP ultra-rápida (effort: 1)
+              const webpBuffer = await sharp(rawBuffer).webp({ quality: 82, effort: 1 }).toBuffer();
               finalSize = webpBuffer.length;
               finalMime = 'image/webp';
               const encrypted = encryptZeroKnowledge(webpBuffer);
 
-              // Generar y subir miniatura WebP
-              const thumbBuffer = await sharp(webpBuffer).resize({ width: 480, withoutEnlargement: true }).webp({ quality: 75 }).toBuffer();
-              const encThumb = encryptZeroKnowledge(thumbBuffer);
-              uploadToCloudStorage(`thumbnails/${userId}/${thumbName}.enc`, encThumb).catch(() => {});
-              finalThumbnailUrl = `/uploads/${userId}/thumbnails/${thumbName}`;
+              // La imagen es su propia miniatura (cero archivos duplicados en Firebase Storage)
+              finalThumbnailUrl = `/uploads/${userId}/image/${diskName}`;
 
-              // Subir a Firebase Storage
+              // Subir a Firebase Storage - ÚNICAMENTE en media/
               cloudStoragePath = `media/${userId}/image/${diskName}.enc`;
               const uploadRes = await uploadToCloudStorage(cloudStoragePath, encrypted);
               cloudUrl = uploadRes.downloadUrl;

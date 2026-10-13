@@ -139,13 +139,9 @@ export const MediaCard = memo(({
                     onError={() => setImgError(true)}
                   />
                 ) : (
-                  <video 
-                    src={item.url + '#t=0.5'} 
-                    preload="metadata" 
-                    muted 
-                    playsInline 
-                    className={cn("w-full h-full object-cover pointer-events-none", item.isAdultContent && "blur-md")} 
-                  />
+                  <div className="w-full h-full flex items-center justify-center bg-primary/20">
+                    <Play className="h-4 w-4 text-primary fill-primary" />
+                  </div>
                 )
               ) : (
                 <img 
@@ -209,13 +205,12 @@ export const MediaCard = memo(({
                   onError={() => setImgError(true)}
                 />
               ) : (
-                <video 
-                  src={item.url + '#t=0.5'} 
-                  preload="metadata" 
-                  muted 
-                  playsInline 
-                  className={cn("w-full h-full object-cover transition-transform duration-500 group-hover:scale-110 pointer-events-none", item.isAdultContent && "blur-2xl opacity-40 scale-125")} 
-                />
+                <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-indigo-950/40 via-purple-950/20 to-black/80 relative overflow-hidden group-hover:scale-105 transition-transform duration-500">
+                  <div className="w-12 h-12 rounded-2xl bg-white/10 border border-white/20 flex items-center justify-center backdrop-blur-md shadow-2xl group-hover:scale-110 group-hover:bg-primary/30 transition-all">
+                    <Play className="h-5 w-5 text-primary fill-primary ml-0.5" />
+                  </div>
+                  <span className="text-[9px] font-black uppercase tracking-widest text-white/70 mt-2.5">Video</span>
+                </div>
               )
             ) : (
               <img 

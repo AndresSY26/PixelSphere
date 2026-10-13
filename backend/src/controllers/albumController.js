@@ -12,42 +12,62 @@ import {
 import { broadcastNeuralEvent } from '../services/eventService.js';
 import { query } from '../db/index.js';
 
+let albumsCache = {
+  data: null,
+  timestamp: 0,
+};
+
+export function invalidateAlbumsCache() {
+  albumsCache.data = null;
+  albumsCache.timestamp = 0;
+}
+
 export async function listAlbums(req, res) {
   try {
     const { userId, all } = req.query;
-    let albums = await getAlbums();
+    const now = Date.now();
+    let albums;
 
-    // Reconciliación bidireccional automática con la base de datos de medios:
-    // Asegura que cualquier medio con album_id o album_ids se refleje en mediaIds del álbum
-    try {
-      const allMedia = await getMedia();
-      const mediaByAlbum = new Map();
-      for (const m of allMedia) {
-        if (m.isDeleted) continue;
-        if (m.albumId) {
-          if (!mediaByAlbum.has(m.albumId)) mediaByAlbum.set(m.albumId, new Set());
-          mediaByAlbum.get(m.albumId).add(m.id);
-        }
-        if (Array.isArray(m.albumIds)) {
-          for (const aid of m.albumIds) {
-            if (!mediaByAlbum.has(aid)) mediaByAlbum.set(aid, new Set());
-            mediaByAlbum.get(aid).add(m.id);
+    if (albumsCache.data && (now - albumsCache.timestamp < 3000)) {
+      albums = albumsCache.data;
+    } else {
+      albums = await getAlbums();
+
+      // Reconciliación bidireccional automática con la base de datos de medios:
+      // Asegura que cualquier medio con album_id o album_ids se refleje en mediaIds del álbum
+      try {
+        const allMedia = await getMedia();
+        const mediaByAlbum = new Map();
+        for (const m of allMedia) {
+          if (m.isDeleted) continue;
+          if (m.albumId) {
+            if (!mediaByAlbum.has(m.albumId)) mediaByAlbum.set(m.albumId, new Set());
+            mediaByAlbum.get(m.albumId).add(m.id);
+          }
+          if (Array.isArray(m.albumIds)) {
+            for (const aid of m.albumIds) {
+              if (!mediaByAlbum.has(aid)) mediaByAlbum.set(aid, new Set());
+              mediaByAlbum.get(aid).add(m.id);
+            }
           }
         }
+
+        albums = albums.map(a => {
+          const explicitIds = Array.isArray(a.mediaIds) ? a.mediaIds : [];
+          const derivedIds = mediaByAlbum.get(a.id) ? Array.from(mediaByAlbum.get(a.id)) : [];
+          const combined = Array.from(new Set([...explicitIds, ...derivedIds]));
+          return { ...a, mediaIds: combined };
+        });
+      } catch (recErr) {
+        console.warn('[AlbumController] Reconciliación omitida:', recErr.message);
       }
 
-      albums = albums.map(a => {
-        const explicitIds = Array.isArray(a.mediaIds) ? a.mediaIds : [];
-        const derivedIds = mediaByAlbum.get(a.id) ? Array.from(mediaByAlbum.get(a.id)) : [];
-        const combined = Array.from(new Set([...explicitIds, ...derivedIds]));
-        return { ...a, mediaIds: combined };
-      });
-    } catch (recErr) {
-      console.warn('[AlbumController] Reconciliación omitida:', recErr.message);
+      albumsCache.data = albums;
+      albumsCache.timestamp = now;
     }
 
     if (userId && all === 'false') {
-      albums = albums.filter(a => a.userId === userId);
+      return res.json(albums.filter(a => a.userId === userId));
     }
     return res.json(albums);
   } catch (error) {
@@ -137,6 +157,7 @@ export async function createAlbum(req, res) {
     };
 
     const saved = await createAlbumStorage(newAlbum);
+    invalidateAlbumsCache();
     return res.status(201).json({ success: true, album: saved });
   } catch (error) {
     console.error('[AlbumController] Error al crear álbum:', error);
@@ -150,6 +171,7 @@ export async function updateAlbum(req, res) {
     const { userId, updates } = req.body;
     const updated = await updateAlbumStorage(id, userId, updates);
     if (!updated) return res.status(404).json({ error: 'Álbum no encontrado o sin permisos.' });
+    invalidateAlbumsCache();
     return res.json({ success: true, album: updated });
   } catch (error) {
     console.error('[AlbumController] Error al actualizar álbum:', error);
@@ -162,6 +184,7 @@ export async function deleteAlbum(req, res) {
     const { id } = req.params;
     const { userId } = req.body;
     const deletedIds = await deleteAlbumStorage(id, userId);
+    invalidateAlbumsCache();
     return res.json({ success: true, deletedIds });
   } catch (error) {
     console.error('[AlbumController] Error al eliminar álbum:', error);
@@ -221,6 +244,10 @@ export async function addMediaToAlbum(req, res) {
       }
     }
 
+    await getAlbums().catch(() => {});
+    await getMedia().catch(() => {});
+    invalidateAlbumsCache();
+
     broadcastNeuralEvent('ALBUMS', { userId: album.userId || userId, albumId: id });
     broadcastNeuralEvent('MEDIA', { userId: album.userId || userId });
 
@@ -239,8 +266,11 @@ export async function addMediaToAlbum(req, res) {
 export async function removeMediaFromAlbum(req, res) {
   try {
     const { id } = req.params;
-    const { userId, mediaIds } = req.body;
-    if (!mediaIds || !Array.isArray(mediaIds)) {
+    const { userId } = req.body;
+    const mediaIds = Array.isArray(req.body.mediaIds) 
+      ? req.body.mediaIds 
+      : (req.body.mediaId ? [req.body.mediaId] : []);
+    if (!mediaIds || mediaIds.length === 0) {
       return res.status(400).json({ error: 'Se requiere una lista de IDs de medios.' });
     }
 
@@ -287,6 +317,10 @@ export async function removeMediaFromAlbum(req, res) {
         console.warn(`[AlbumController] Error desvinculando medio ${mId}:`, mErr.message);
       }
     }
+
+    await getAlbums().catch(() => {});
+    await getMedia().catch(() => {});
+    invalidateAlbumsCache();
 
     broadcastNeuralEvent('ALBUMS', { userId: album.userId || userId, albumId: id });
     broadcastNeuralEvent('MEDIA', { userId: album.userId || userId });

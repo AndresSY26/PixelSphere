@@ -1,0 +1,22 @@
+{
+  "entities": {
+    "users": {
+      "title": "User",
+      "description": "PixelSphere user profile and settings",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "email": { "type": "string" },
+        "username": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "email"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "users",
+      "description": "User profile store"
+    }
+  }
+}

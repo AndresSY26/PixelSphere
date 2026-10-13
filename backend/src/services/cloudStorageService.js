@@ -62,12 +62,8 @@ export async function uploadToCloudStorage(destinationPath, dataOrPath, contentT
     let payload = dataOrPath;
 
     if (typeof dataOrPath === 'string') {
-      // Es una ruta de archivo en disco: abrir como Blob para streaming directo sin cargar a RAM
-      if (typeof fs.openAsBlob === 'function') {
-        payload = await fs.openAsBlob(dataOrPath);
-      } else {
-        payload = await fs.promises.readFile(dataOrPath);
-      }
+      // Leer buffer directamente con fs.promises.readFile para evitar que FileHandle quede abierto en recolección de basura
+      payload = await fs.promises.readFile(dataOrPath);
     }
 
     const metadata = {
@@ -115,26 +111,33 @@ export async function uploadToCloudStorage(destinationPath, dataOrPath, contentT
  */
 export async function downloadFromCloudStorage(storagePath) {
   try {
-    const fileRef = ref(cloudStorage, storagePath);
-    // Para archivos pequeños usamos getBytes con límite aumentado a 500MB
-    const arrayBuf = await getBytes(fileRef, 500 * 1024 * 1024);
-    return Buffer.from(arrayBuf);
-  } catch (error) {
-    // Si falla getBytes por límite de memoria o cuota, intentar vía fetch directo con getDownloadURL
-    try {
+    const downloadPromise = (async () => {
       const fileRef = ref(cloudStorage, storagePath);
-      const url = await getDownloadURL(fileRef);
-      const res = await fetch(url);
-      if (res.ok) {
-        const ab = await res.arrayBuffer();
-        return Buffer.from(ab);
+      try {
+        const arrayBuf = await getBytes(fileRef, 1024 * 1024 * 1024);
+        return Buffer.from(arrayBuf);
+      } catch (err) {
+        // Fallback a URL pública directa
+        const url = await getDownloadURL(fileRef);
+        const res = await fetch(url);
+        if (res.ok) {
+          const ab = await res.arrayBuffer();
+          return Buffer.from(ab);
+        }
+        throw err;
       }
-    } catch (e2) {}
+    })();
 
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Timeout de descarga desde Firebase Storage (30s)')), 30000)
+    );
+
+    return await Promise.race([downloadPromise, timeoutPromise]);
+  } catch (error) {
     if (error?.code === 'storage/object-not-found' || error?.message?.includes('object-not-found')) {
       return null;
     }
-    console.warn(`[CloudStorage] Error descargando ${storagePath} de Firebase:`, error.message);
+    console.warn(`[CloudStorage] Error o timeout descargando ${storagePath} de Firebase:`, error.message);
     return null;
   }
 }

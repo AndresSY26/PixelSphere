@@ -93,6 +93,7 @@ function mapMediaFromDb(row) {
     sharedWith: Array.isArray(row.shared_with) ? row.shared_with : [],
     isShared: !!row.is_shared,
     isDeleted: !!row.is_deleted,
+    isPrivate: !!row.is_private,
     deletedAt: row.deleted_at ? new Date(row.deleted_at).toISOString() : null,
     source: row.source || null,
     camera: row.camera || null,
@@ -584,6 +585,17 @@ export async function saveMediaMetadata(entry) {
         WHERE id = $2`,
         [JSON.stringify([entry.id]), albId]
       ).catch(() => {});
+
+      const albIdx = CACHE.albums.findIndex(a => a.id === albId);
+      if (albIdx > -1) {
+        const curMediaIds = Array.isArray(CACHE.albums[albIdx].mediaIds) ? CACHE.albums[albIdx].mediaIds : [];
+        if (!curMediaIds.includes(entry.id)) {
+          CACHE.albums[albIdx] = {
+            ...CACHE.albums[albIdx],
+            mediaIds: [...curMediaIds, entry.id]
+          };
+        }
+      }
     }
   }
 
@@ -1088,31 +1100,86 @@ export async function checkUserStorageQuota(userId, incomingBytes = 0) {
       [userId]
     );
     if (res.rows[0]) {
-      const quota = parseInt(res.rows[0].storage_quota, 10) || 3221225472;
+      let quota = parseInt(res.rows[0].storage_quota, 10) || 3221225472;
       const used = parseInt(res.rows[0].storage_used, 10) || 0;
       const plan = res.rows[0].plan || 'free';
       const role = res.rows[0].role || 'user';
 
-      if (role === 'admin') {
-        return { allowed: true, quota, used, plan, role, available: Math.max(0, quota - used) };
+      // Forzar cuota estricta de 3 GB para cuentas gratuitas
+      if (plan === 'free' || !plan) {
+        quota = 3221225472;
       }
 
-      if (used + incomingBytes > quota) {
+      // Si el plan es gratuito (3 GB) o ya llenó la cuota asignada, BLOQUEAR categóricamente
+      // No permitir subir más activos una vez alcanzado el límite de 3 GB
+      if (used >= quota || (incomingBytes > 0 && used + incomingBytes > quota)) {
         return {
           allowed: false,
           quota,
           used,
           plan,
-          available: Math.max(0, quota - used),
-          needed: incomingBytes
+          role,
+          available: 0,
+          needed: incomingBytes,
+          error: `Has alcanzado el límite de almacenamiento de 3 GB de tu plan gratuito (${(used / (1024 * 1024 * 1024)).toFixed(2)} GB usados). No es posible subir más activos. Libera espacio o mejora tu plan.`
         };
       }
-      return { allowed: true, quota, used, plan, available: quota - used };
+
+      if (role === 'admin' && plan !== 'free') {
+        return { allowed: true, quota, used, plan, role, available: Math.max(0, quota - used) };
+      }
+
+      return { allowed: true, quota, used, plan, available: Math.max(0, quota - used) };
     }
   } catch (err) {
     console.warn('[StorageService] Error comprobando cuota:', err.message);
   }
-  return { allowed: true, quota: 3221225472, used: 0, plan: 'free' };
+  return { allowed: false, quota: 3221225472, used: 0, plan: 'free' };
+}
+
+export async function auditAndRecalculateUserStorage(userId) {
+  if (!userId) return null;
+  await ensureDirectories();
+  try {
+    // 1. Recalcular suma real de elementos no eliminados
+    const sumRes = await query(
+      `SELECT COALESCE(SUM(size), 0) as total_size, COUNT(*) as active_count 
+       FROM media WHERE user_id = $1 AND is_deleted = false`,
+      [userId]
+    );
+    const totalSize = parseInt(sumRes.rows[0]?.total_size, 10) || 0;
+    const activeCount = parseInt(sumRes.rows[0]?.active_count, 10) || 0;
+
+    // 2. Actualizar en users
+    const updateRes = await query(
+      `UPDATE users 
+       SET storage_used = $1,
+           storage_quota = CASE WHEN plan = 'free' OR plan IS NULL THEN 3221225472 ELSE storage_quota END,
+           updated_at = NOW()
+       WHERE id = $2
+       RETURNING *`,
+      [totalSize, userId]
+    );
+
+    const updatedUser = updateRes.rows[0];
+    if (updatedUser) {
+      const mapped = mapUserFromDb(updatedUser);
+      const u = CACHE.users.find(usr => usr.id === userId);
+      if (u) {
+        u.storageUsed = mapped.storageUsed;
+        u.storageQuota = mapped.storageQuota;
+        u.plan = mapped.plan;
+      }
+      broadcastNeuralEvent('USER', { userId, action: 'STORAGE_RECALCULATED', storageUsed: totalSize });
+      return {
+        ...mapped,
+        activeCount
+      };
+    }
+  } catch (err) {
+    console.error('[StorageService] Error auditando almacenamiento de usuario:', err);
+  }
+  return null;
 }
 
 export async function findMediaByHash(userId, fileHash) {

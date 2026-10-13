@@ -36,6 +36,20 @@ router.get('/stats/achievements/:userId', getAchievements);
 router.get('/stats/history/:userId', getHistory);
 router.delete('/stats/history/:userId', clearHistory);
 
+// Reconciliación y auditoría de almacenamiento (Cuota 3GB)
+router.post('/storage/recalculate', async (req, res) => {
+  try {
+    const { auditAndRecalculateUserStorage } = await import('../services/storageService.js');
+    const userId = req.body?.userId || req.headers['x-user-id'];
+    if (!userId) return res.status(400).json({ error: 'Falta userId' });
+    const result = await auditAndRecalculateUserStorage(userId);
+    if (!result) return res.status(404).json({ error: 'Usuario no encontrado' });
+    return res.json({ success: true, user: result });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // Estado del motor de base de datos Neon PostgreSQL y Firebase Storage
 router.get('/database/inspect', async (req, res) => {
   try {

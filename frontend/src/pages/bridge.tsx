@@ -219,6 +219,19 @@ export default function CloudBridgePage() {
 
   const executeImport = async () => {
     if (!user || !selectedProvider || selectedCloudIds.size === 0) return;
+
+    // Control estricto de cuota de 3 GB
+    const effectiveQuota = user?.storageQuota || (3 * 1024 * 1024 * 1024);
+    const currentUsed = user?.storageUsed || 0;
+    if (currentUsed >= effectiveQuota) {
+      toast({
+        title: "Límite de Almacenamiento Alcanzado",
+        description: `Has alcanzado el límite de 3 GB de tu plan gratuito (${formatBytes(currentUsed)} usados). Libera espacio o mejora tu plan para continuar.`,
+        variant: "destructive"
+      });
+      return;
+    }
+
     setIsImporting(true);
     setImportProgress(0);
 

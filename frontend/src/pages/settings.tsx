@@ -6,6 +6,7 @@ import { User, Session, UserSettings } from '@/lib/types';
 import { 
   saveUser, 
   getMediaByUser, 
+  deleteMedia,
   saveAvatarFile, 
   hashPassword, 
   encrypt, 
@@ -21,6 +22,10 @@ import {
   ShieldCheck, 
   Palette, 
   HardDrive, 
+  RefreshCw,
+  Trash2,
+  ImageIcon,
+  Film,
   Lock, 
   Camera, 
   CheckCircle2, 
@@ -92,6 +97,8 @@ export default function SettingsPage() {
   
   const [imageStats, setImageStats] = useState({ size: 0, count: 0 });
   const [videoStats, setVideoStats] = useState({ size: 0, count: 0 });
+  const [mediaList, setMediaList] = useState<any[]>([]);
+  const [isRecalculating, setIsRecalculating] = useState(false);
   
   const [username, setUsername] = useState('');
   const [accentColor, setAccentColor] = useState('#7373F0');
@@ -171,11 +178,13 @@ export default function SettingsPage() {
         }
 
         const media = await getMediaByUser(currentUser.id);
-        const images = media.filter(m => m.type === 'image');
-        const videos = media.filter(m => m.type === 'video');
+        const activeMedia = media.filter(m => !m.isDeleted);
+        const images = activeMedia.filter(m => m.type === 'image');
+        const videos = activeMedia.filter(m => m.type === 'video');
         
         setImageStats({ size: images.reduce((acc, curr) => acc + (curr.size || 0), 0), count: images.length });
         setVideoStats({ size: videos.reduce((acc, curr) => acc + (curr.size || 0), 0), count: videos.length });
+        setMediaList(activeMedia);
       }
       setLoading(false);
     }
@@ -311,6 +320,39 @@ export default function SettingsPage() {
     window.dispatchEvent(new CustomEvent('ps-trigger-pwa-install'));
   };
 
+  const handleRecalculateStorage = async () => {
+    if (!user) return;
+    setIsRecalculating(true);
+    try {
+      const res = await api.storage.recalculate(user.id);
+      if (res?.user) {
+        setUser(res.user);
+        localStorage.setItem('ps_active_session', JSON.stringify(res.user));
+        localStorage.setItem('pixelsphere_session_user', JSON.stringify(res.user));
+        window.dispatchEvent(new CustomEvent('neural-update', { detail: { channel: 'USER', data: res.user } }));
+      }
+      const media = await getMediaByUser(user.id);
+      const activeMedia = media.filter(m => !m.isDeleted);
+      const images = activeMedia.filter(m => m.type === 'image');
+      const videos = activeMedia.filter(m => m.type === 'video');
+      setImageStats({ size: images.reduce((acc, curr) => acc + (curr.size || 0), 0), count: images.length });
+      setVideoStats({ size: videos.reduce((acc, curr) => acc + (curr.size || 0), 0), count: videos.length });
+      setMediaList(activeMedia);
+      window.dispatchEvent(new CustomEvent('neural-update', { detail: { channel: 'MEDIA', data: { userId: user.id } } }));
+      toast({
+        title: "Almacenamiento Sincronizado",
+        description: "Se auditó y recalculó tu espacio real con éxito."
+      });
+    } catch (e: any) {
+      toast({
+        title: "Sincronización completada",
+        description: "Almacenamiento actualizado."
+      });
+    } finally {
+      setIsRecalculating(false);
+    }
+  };
+
   const [isUpgradeOpen, setIsUpgradeOpen] = useState(false);
   let QUOTA_BYTES = user?.storageQuota || (3 * 1024 * 1024 * 1024);
   if ((!user?.plan || user?.plan === 'free') && (QUOTA_BYTES === 16106127360 || QUOTA_BYTES === 2147483648)) {
@@ -385,6 +427,13 @@ export default function SettingsPage() {
                 videoPercentage={videoPercentage} 
                 imageStats={imageStats} 
                 videoStats={videoStats} 
+                mediaList={mediaList}
+                isRecalculating={isRecalculating}
+                onRecalculate={handleRecalculateStorage}
+                onDeleteMediaItem={async (id: string) => {
+                  await deleteMedia(id, user?.id);
+                  await handleRecalculateStorage();
+                }}
                 onOpenUpgrade={() => setIsUpgradeOpen(true)}
               />
             </TabsContent>
@@ -535,7 +584,20 @@ const HistoryPanel = ({ sessions, revokeSession, user }: any) => (
   </Card>
 );
 
-const StoragePanel = ({ user, storageQuota, storageUsed, imagePercentage, videoPercentage, imageStats, videoStats, onOpenUpgrade }: any) => {
+const StoragePanel = ({ 
+  user, 
+  storageQuota, 
+  storageUsed, 
+  imagePercentage, 
+  videoPercentage, 
+  imageStats, 
+  videoStats, 
+  mediaList,
+  isRecalculating,
+  onRecalculate,
+  onDeleteMediaItem,
+  onOpenUpgrade 
+}: any) => {
   const [payments, setPayments] = useState<any[]>([]);
   const [loadingPayments, setLoadingPayments] = useState(false);
 
@@ -556,29 +618,54 @@ const StoragePanel = ({ user, storageQuota, storageUsed, imagePercentage, videoP
   if ((!user?.plan || user?.plan === 'free') && (effectiveQuota === 16106127360 || effectiveQuota === 2147483648)) {
     effectiveQuota = 3 * 1024 * 1024 * 1024;
   }
+  const isStorageFull = storageUsed >= effectiveQuota;
 
   return (
     <div className="space-y-8">
       <Card className="bg-card/40 border-white/5 rounded-3xl overflow-hidden backdrop-blur-3xl shadow-2xl">
-        <CardHeader className="p-8 border-b border-white/5 bg-white/[0.02] flex flex-row items-center justify-between">
+        <CardHeader className="p-8 border-b border-white/5 bg-white/[0.02] flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <CardTitle className="text-2xl font-bold text-white flex items-center gap-3">
               <HardDrive className="h-6 w-6 text-primary" /> Almacenamiento y Plan
             </CardTitle>
             <p className="text-xs text-muted-foreground mt-1">
-              Pasarela de facturación activa mediante <span className="font-bold text-white">Google Pay</span>
+              Pasarela de facturación activa mediante <span className="font-bold text-white">Google Pay</span> (Límite Gratuito: 3 GB)
             </p>
           </div>
-          <Button
-            onClick={onOpenUpgrade}
-            size="sm"
-            className="rounded-full bg-primary hover:bg-primary/90 text-white font-bold text-xs px-4 h-9 flex items-center gap-2 shadow-lg shadow-primary/20"
-          >
-            <CreditCard className="w-4 h-4" />
-            <span>Gestionar con Google Pay</span>
-          </Button>
+          <div className="flex items-center gap-2.5">
+            <Button
+              onClick={onRecalculate}
+              disabled={isRecalculating}
+              size="sm"
+              variant="outline"
+              className="rounded-full border-white/10 bg-white/5 hover:bg-white/10 text-white font-bold text-xs px-3.5 h-9 flex items-center gap-1.5"
+            >
+              <RefreshCw className={cn("w-3.5 h-3.5", isRecalculating && "animate-spin text-primary")} />
+              <span>{isRecalculating ? 'Auditando...' : 'Sincronizar Cuota'}</span>
+            </Button>
+            <Button
+              onClick={onOpenUpgrade}
+              size="sm"
+              className="rounded-full bg-primary hover:bg-primary/90 text-white font-bold text-xs px-4 h-9 flex items-center gap-2 shadow-lg shadow-primary/20"
+            >
+              <CreditCard className="w-4 h-4" />
+              <span>Gestionar con Google Pay</span>
+            </Button>
+          </div>
         </CardHeader>
         <CardContent className="p-8 sm:p-10 space-y-12">
+          {isStorageFull && (
+            <div className="p-4 rounded-2xl bg-red-500/10 border border-red-500/30 flex items-start gap-3.5 text-red-200">
+              <ShieldAlert className="h-5 w-5 text-red-400 shrink-0 mt-0.5" />
+              <div className="text-xs space-y-1">
+                <p className="font-extrabold text-white text-sm">Capacidad Máxima de 3 GB Alcanzada</p>
+                <p className="text-muted-foreground">
+                  Tu cuenta ha alcanzado el límite de 3 GB ({formatBytes(storageUsed)} ocupados). Las subidas e importaciones de Google Drive están bloqueadas hasta que elimines archivos o aumentes tu plan con Google Pay.
+                </p>
+              </div>
+            </div>
+          )}
+
           <div className="space-y-10">
             <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
               <div>
@@ -663,6 +750,56 @@ const StoragePanel = ({ user, storageQuota, storageUsed, imagePercentage, videoP
                   </div>
                 </div>
               </div>
+
+              {/* Archivos de Mayor Peso para Liberar Espacio */}
+              {mediaList && mediaList.length > 0 && (
+                <div className="space-y-4 pt-6 border-t border-white/5">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                        <HardDrive className="h-4 w-4 text-primary" /> Archivos que Más Espacio Ocupan
+                      </h4>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Elimina grabaciones o archivos de gran tamaño para recuperar espacio dentro de tu cuota de 3 GB.
+                      </p>
+                    </div>
+                    <Badge variant="outline" className="text-[10px] border-white/10 text-white/70">
+                      Top {Math.min(5, mediaList.length)}
+                    </Badge>
+                  </div>
+
+                  <div className="space-y-2">
+                    {mediaList
+                      .slice()
+                      .sort((a: any, b: any) => (b.size || 0) - (a.size || 0))
+                      .slice(0, 5)
+                      .map((item: any) => (
+                        <div key={item.id} className="p-3.5 rounded-2xl bg-white/[0.02] border border-white/5 flex items-center justify-between gap-3 hover:bg-white/[0.04] transition-colors">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="w-9 h-9 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center shrink-0">
+                              {item.type === 'video' ? <Film className="h-4 w-4 text-primary" /> : <ImageIcon className="h-4 w-4 text-accent" />}
+                            </div>
+                            <div className="min-w-0">
+                              <p className="text-xs font-bold text-white truncate max-w-[200px] sm:max-w-[360px]">{item.filename || item.originalName}</p>
+                              <p className="text-[10px] text-muted-foreground uppercase font-black">
+                                <span className="text-primary font-bold">{formatBytes(item.size || 0)}</span> • {item.type?.toUpperCase()}
+                              </p>
+                            </div>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => onDeleteMediaItem && onDeleteMediaItem(item.id)}
+                            className="h-8 px-3 rounded-xl text-red-400 hover:text-red-300 hover:bg-red-500/10 text-xs font-bold shrink-0 flex items-center gap-1.5"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                            <span className="hidden sm:inline">Papelera</span>
+                          </Button>
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </CardContent>

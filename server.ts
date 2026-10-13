@@ -15,6 +15,7 @@ import { errorHandler } from './backend/src/middlewares/errorHandler.js';
 import { decryptZeroKnowledge } from './backend/src/services/mediaOptimizationService.js';
 import { downloadFromCloudStorage } from './backend/src/services/cloudStorageService.js';
 import { query } from './backend/src/db/index.js';
+import { getCachedMedia, setCachedMedia, getInFlight, setInFlight } from './backend/src/services/mediaCacheService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -45,47 +46,180 @@ async function startServer() {
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-  // Servir archivos multimedia directamente desde Firebase Storage en memoria
-  // Cero almacenamiento en el disco del servidor (Zero Server-Disk Storage)
+  // Servir archivos multimedia con caché en memoria LRU ultra-rápido (< 1ms)
+  // Cero saturación de red hacia Firebase Storage
   app.use('/uploads', async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
 
     try {
       const decodedPath = decodeURIComponent(req.path);
-      const parts = decodedPath.split('/').filter(Boolean);
-      let candidateCloudPath = null;
-      if (parts.length >= 3 && parts[1] === 'thumbnails') {
-        candidateCloudPath = `thumbnails/${parts[0]}/${parts[2]}.enc`;
-      } else if (parts.length >= 3 && (parts[1] === 'image' || parts[1] === 'video')) {
-        candidateCloudPath = `media/${parts[0]}/${parts[1]}/${parts[2]}.enc`;
-      }
+      const isVideoRequest = /\.(webm|mp4|mov|mkv|avi)$/i.test(decodedPath);
 
-      let cloudBuf = null;
-      if (candidateCloudPath) {
-        try {
-          cloudBuf = await downloadFromCloudStorage(candidateCloudPath);
-        } catch (e) {}
-      }
-
-      // Si no se encontró por convención, buscar en Neon PostgreSQL por URL
-      if (!cloudBuf) {
+      // FAST-PATH VIDEO: Servir videos directamente con streams desde caché en disco sin agotar la memoria RAM
+      if (isVideoRequest) {
+        let mediaRecord: any = null;
         try {
           const publicUrl = `/uploads${decodedPath}`;
-          const dbRes = await query('SELECT cloud_storage_path FROM media WHERE url = $1 OR thumbnail_url = $1 LIMIT 1', [publicUrl]);
-          if (dbRes?.rows?.[0]?.cloud_storage_path) {
-            cloudBuf = await downloadFromCloudStorage(dbRes.rows[0].cloud_storage_path);
+          const dbRes = await query('SELECT * FROM media WHERE url = $1 OR url LIKE $2 LIMIT 1', [publicUrl, `%${path.basename(decodedPath)}%`]);
+          if (dbRes?.rows?.[0]) {
+            const { mapMediaFromDb } = await import('./backend/src/services/storageService.js');
+            mediaRecord = mapMediaFromDb(dbRes.rows[0]);
           }
-        } catch (dbErr) {}
+        } catch (e) {}
+
+        if (!mediaRecord) {
+          const parts = decodedPath.split('/').filter(Boolean);
+          mediaRecord = {
+            id: path.basename(decodedPath).split('.')[0],
+            userId: parts[0] || 'user',
+            url: `/uploads${decodedPath}`,
+            cloudStoragePath: `media/${parts[0] || 'user'}/video/${path.basename(decodedPath)}.enc`
+          };
+        }
+
+        const { ensureVideoAvailableOnDisk } = await import('./backend/src/controllers/mediaController.js');
+        const diskPath = await ensureVideoAvailableOnDisk(mediaRecord);
+        if (!diskPath || !fs.existsSync(diskPath)) {
+          return res.status(404).send('Archivo físico de video no encontrado.');
+        }
+
+        const stat = await fs.promises.stat(diskPath);
+        const total = stat.size;
+        let contentType = 'video/webm';
+        if (decodedPath.endsWith('.mp4')) contentType = 'video/mp4';
+        else if (decodedPath.endsWith('.mov')) contentType = 'video/quicktime';
+        else if (decodedPath.endsWith('.mkv')) contentType = 'video/x-matroska';
+
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Accept-Ranges', 'bytes');
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+
+        if (req.method === 'HEAD') {
+          res.writeHead(200, { 'Content-Length': total, 'Content-Type': contentType, 'Accept-Ranges': 'bytes' });
+          return res.end();
+        }
+
+        const range = req.headers.range;
+        if (range) {
+          const partsRange = range.replace(/bytes=/, '').split('-');
+          const start = parseInt(partsRange[0], 10);
+          const end = partsRange[1] ? parseInt(partsRange[1], 10) : total - 1;
+
+          if (start >= total || end >= total) {
+            res.writeHead(416, { 'Content-Range': `bytes */${total}` });
+            return res.end();
+          }
+
+          const chunksize = (end - start) + 1;
+          res.writeHead(206, {
+            'Content-Range': `bytes ${start}-${end}/${total}`,
+            'Content-Length': chunksize,
+            'Content-Type': contentType
+          });
+
+          const stream = fs.createReadStream(diskPath, { start, end });
+          req.on('close', () => stream.destroy());
+          return stream.pipe(res);
+        }
+
+        res.writeHead(200, { 'Content-Length': total, 'Content-Type': contentType, 'Accept-Ranges': 'bytes' });
+        const stream = fs.createReadStream(diskPath);
+        req.on('close', () => stream.destroy());
+        return stream.pipe(res);
+      }
+      
+      // 1. FAST-PATH: Servir directamente desde memoria RAM si ya fue descargado o subido recientemente
+      const cached = getCachedMedia(decodedPath);
+      if (cached) {
+        if (req.headers['if-none-match'] === cached.etag) {
+          return res.status(304).end();
+        }
+
+        res.setHeader('Content-Type', cached.contentType);
+        res.setHeader('Accept-Ranges', 'bytes');
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        res.setHeader('ETag', cached.etag);
+
+        const range = req.headers.range;
+        if (range) {
+          const total = cached.buffer.length;
+          const partsRange = range.replace(/bytes=/, '').split('-');
+          const start = parseInt(partsRange[0], 10);
+          const end = partsRange[1] ? parseInt(partsRange[1], 10) : total - 1;
+
+          if (start >= total || end >= total) {
+            res.writeHead(416, { 'Content-Range': `bytes */${total}` });
+            return res.end();
+          }
+
+          const chunk = cached.buffer.subarray(start, end + 1);
+          res.writeHead(206, {
+            'Content-Range': `bytes ${start}-${end}/${total}`,
+            'Content-Length': chunk.length,
+            'Content-Type': cached.contentType
+          });
+          return res.end(chunk);
+        }
+
+        res.setHeader('Content-Length', cached.buffer.length);
+        return res.end(cached.buffer);
       }
 
-      if (!cloudBuf || cloudBuf.length === 0) {
+      // 2. Deduplicación de peticiones concurrentes en vuelo (evita múltiples descargas de la misma imagen/video)
+      let fetchPromise = getInFlight(decodedPath);
+      if (!fetchPromise) {
+        fetchPromise = (async () => {
+          const parts = decodedPath.split('/').filter(Boolean);
+          let candidateCloudPath = null;
+          if (parts.length >= 3 && parts[1] === 'thumbnails') {
+            candidateCloudPath = `thumbnails/${parts[0]}/${parts[2]}.enc`;
+          } else if (parts.length >= 3 && (parts[1] === 'image' || parts[1] === 'video')) {
+            candidateCloudPath = `media/${parts[0]}/${parts[1]}/${parts[2]}.enc`;
+          }
+
+          let cloudBuf = null;
+          if (candidateCloudPath) {
+            try {
+              cloudBuf = await downloadFromCloudStorage(candidateCloudPath);
+            } catch (e) {}
+          }
+
+          // Si se solicitó miniatura y no existe en thumbnails/, recuperar directamente desde media/image/
+          if (!cloudBuf && parts.length >= 3 && parts[1] === 'thumbnails') {
+            try {
+              const fallbackMedia = `media/${parts[0]}/image/${parts[2]}.enc`;
+              cloudBuf = await downloadFromCloudStorage(fallbackMedia);
+            } catch (e) {}
+          }
+
+          // Si no se encontró por convención, buscar en Neon PostgreSQL por URL
+          if (!cloudBuf) {
+            try {
+              const publicUrl = `/uploads${decodedPath}`;
+              const dbRes = await query('SELECT cloud_storage_path FROM media WHERE url = $1 OR thumbnail_url = $1 LIMIT 1', [publicUrl]);
+              if (dbRes?.rows?.[0]?.cloud_storage_path) {
+                cloudBuf = await downloadFromCloudStorage(dbRes.rows[0].cloud_storage_path);
+              }
+            } catch (dbErr) {}
+          }
+
+          if (!cloudBuf || cloudBuf.length === 0) return null;
+
+          // Detectar cifrado Zero-Knowledge (cabecera 'PXZK')
+          const isEncrypted = cloudBuf.length >= 4 && cloudBuf.subarray(0, 4).toString('utf-8') === 'PXZK';
+          const decrypted = isEncrypted ? decryptZeroKnowledge(cloudBuf) : cloudBuf;
+          return decrypted;
+        })();
+
+        setInFlight(decodedPath, fetchPromise);
+      }
+
+      const decrypted = await fetchPromise;
+      if (!decrypted || decrypted.length === 0) {
         return res.status(404).send('Archivo no encontrado en Firebase Storage.');
       }
-
-      // Detectar cifrado Zero-Knowledge (cabecera 'PXZK')
-      const isEncrypted = cloudBuf.length >= 4 && cloudBuf.subarray(0, 4).toString('utf-8') === 'PXZK';
-      const decrypted = isEncrypted ? decryptZeroKnowledge(cloudBuf) : cloudBuf;
 
       let contentType = 'application/octet-stream';
       if (decodedPath.endsWith('.webp')) contentType = 'image/webp';
@@ -94,7 +228,10 @@ async function startServer() {
       else if (decodedPath.endsWith('.jpg') || decodedPath.endsWith('.jpeg')) contentType = 'image/jpeg';
       else if (decodedPath.endsWith('.png')) contentType = 'image/png';
 
-      const etag = `"${crypto.createHash('md5').update(decrypted).digest('hex')}"`;
+      // Guardar en caché LRU en RAM
+      const newCached = setCachedMedia(decodedPath, decrypted, contentType);
+
+      const etag = newCached?.etag || `"${crypto.createHash('md5').update(decrypted).digest('hex')}"`;
       if (req.headers['if-none-match'] === etag) {
         return res.status(304).end();
       }

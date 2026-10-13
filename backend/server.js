@@ -48,6 +48,81 @@ app.use('/uploads', async (req, res) => {
 
   try {
     const decodedPath = decodeURIComponent(req.path);
+    const isVideoRequest = /\.(webm|mp4|mov|mkv|avi)$/i.test(decodedPath);
+
+    if (isVideoRequest) {
+      let mediaRecord = null;
+      try {
+        const publicUrl = `/uploads${decodedPath}`;
+        const dbRes = await query('SELECT * FROM media WHERE url = $1 OR url LIKE $2 LIMIT 1', [publicUrl, `%${path.basename(decodedPath)}%`]);
+        if (dbRes?.rows?.[0]) {
+          const { mapMediaFromDb } = await import('./src/services/storageService.js');
+          mediaRecord = mapMediaFromDb(dbRes.rows[0]);
+        }
+      } catch (e) {}
+
+      if (!mediaRecord) {
+        const parts = decodedPath.split('/').filter(Boolean);
+        mediaRecord = {
+          id: path.basename(decodedPath).split('.')[0],
+          userId: parts[0] || 'user',
+          url: `/uploads${decodedPath}`,
+          cloudStoragePath: `media/${parts[0] || 'user'}/video/${path.basename(decodedPath)}.enc`
+        };
+      }
+
+      const { ensureVideoAvailableOnDisk } = await import('./src/controllers/mediaController.js');
+      const diskPath = await ensureVideoAvailableOnDisk(mediaRecord);
+      if (!diskPath || !fs.existsSync(diskPath)) {
+        return res.status(404).send('Archivo físico de video no encontrado.');
+      }
+
+      const stat = await fs.promises.stat(diskPath);
+      const total = stat.size;
+      let contentType = 'video/webm';
+      if (decodedPath.endsWith('.mp4')) contentType = 'video/mp4';
+      else if (decodedPath.endsWith('.mov')) contentType = 'video/quicktime';
+      else if (decodedPath.endsWith('.mkv')) contentType = 'video/x-matroska';
+
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+
+      if (req.method === 'HEAD') {
+        res.writeHead(200, { 'Content-Length': total, 'Content-Type': contentType, 'Accept-Ranges': 'bytes' });
+        return res.end();
+      }
+
+      const range = req.headers.range;
+      if (range) {
+        const partsRange = range.replace(/bytes=/, '').split('-');
+        const start = parseInt(partsRange[0], 10);
+        const end = partsRange[1] ? parseInt(partsRange[1], 10) : total - 1;
+
+        if (start >= total || end >= total) {
+          res.writeHead(416, { 'Content-Range': `bytes */${total}` });
+          return res.end();
+        }
+
+        const chunksize = (end - start) + 1;
+        res.writeHead(206, {
+          'Content-Range': `bytes ${start}-${end}/${total}`,
+          'Content-Length': chunksize,
+          'Content-Type': contentType
+        });
+
+        const stream = fs.createReadStream(diskPath, { start, end });
+        req.on('close', () => stream.destroy());
+        return stream.pipe(res);
+      }
+
+      res.writeHead(200, { 'Content-Length': total, 'Content-Type': contentType, 'Accept-Ranges': 'bytes' });
+      const stream = fs.createReadStream(diskPath);
+      req.on('close', () => stream.destroy());
+      return stream.pipe(res);
+    }
+
     const parts = decodedPath.split('/').filter(Boolean);
     let candidateCloudPath = null;
     if (parts.length >= 3 && parts[1] === 'thumbnails') {

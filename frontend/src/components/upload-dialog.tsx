@@ -73,7 +73,7 @@ interface UploadDialogProps {
   onUploadSuccess?: () => void;
 }
 
-const CHUNK_SIZE = 4 * 1024 * 1024; // 4MB - Óptimo para estabilidad y rendimiento en subidas de red
+const CHUNK_SIZE = 16 * 1024 * 1024; // 16MB - Óptimo para máxima velocidad sin latencia de múltiples peticiones
 
 export default function UploadDialog({ isOpen, onClose, user, defaultAlbumId, onUploadSuccess }: UploadDialogProps) {
   const [uploadQueue, setUploadQueue] = useState<UploadFile[]>([]);
@@ -81,6 +81,10 @@ export default function UploadDialog({ isOpen, onClose, user, defaultAlbumId, on
   const [overallProgress, setOverallProgress] = useState(0);
   const [globalAdult, setGlobalAdult] = useState(false);
   const [isDrivePickerOpen, setIsDrivePickerOpen] = useState(false);
+  
+  const effectiveQuota = user?.storageQuota || (3 * 1024 * 1024 * 1024);
+  const currentUsed = user?.storageUsed || 0;
+  const isQuotaFull = currentUsed >= effectiveQuota;
   
   // Estados Geoespaciales
   const [currentCoords, setCurrentCoords] = useState<{lat: number, lng: number} | null>(null);
@@ -233,6 +237,14 @@ export default function UploadDialog({ isOpen, onClose, user, defaultAlbumId, on
   };
 
   const processFiles = async (files: File[]) => {
+    if (isQuotaFull) {
+      toast({
+        title: "Límite de Almacenamiento Alcanzado (3 GB)",
+        description: "Has alcanzado el límite de 3.00 GB de tu plan gratuito. No es posible subir más archivos hasta liberar espacio o mejorar tu plan.",
+        variant: "destructive"
+      });
+      return;
+    }
     const newEntries: UploadFile[] = [];
     for (const file of files) {
       const isVideo = file.type.startsWith('video/') || /\.(mp4|mov|webm|mkv|avi|m4v|3gp)$/i.test(file.name);
@@ -350,16 +362,100 @@ export default function UploadDialog({ isOpen, onClose, user, defaultAlbumId, on
     });
   };
 
+  const uploadChunkXHR = (
+    formData: FormData,
+    onProgress?: (loaded: number, total: number) => void
+  ): Promise<{ ok: boolean; status: number; data?: any; error?: string }> => {
+    return new Promise((resolve) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/upload');
+      xhr.setRequestHeader('Accept', 'application/json');
+
+      if (xhr.upload && onProgress) {
+        xhr.upload.onprogress = (evt) => {
+          if (evt.lengthComputable) {
+            onProgress(evt.loaded, evt.total);
+          }
+        };
+      }
+
+      xhr.onload = () => {
+        let data: any = {};
+        try {
+          data = JSON.parse(xhr.responseText || '{}');
+        } catch (e) {}
+
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve({ ok: true, status: xhr.status, data });
+        } else {
+          resolve({
+            ok: false,
+            status: xhr.status,
+            error: data.error || `Error del servidor HTTP ${xhr.status}`
+          });
+        }
+      };
+
+      xhr.onerror = () => {
+        resolve({ ok: false, status: 0, error: 'Error de conexión de red durante la subida' });
+      };
+
+      xhr.ontimeout = () => {
+        resolve({ ok: false, status: 0, error: 'Tiempo de espera agotado al subir fragmento' });
+      };
+
+      xhr.timeout = 90000;
+      xhr.send(formData);
+    });
+  };
+
   const handleBatchUpload = async () => {
     if (uploadQueue.length === 0) return;
-    setIsUploading(true);
-    let completedCount = 0;
-    const itemsToUpload = uploadQueue.filter(item => item.status !== 'completed');
 
+    // Verificación estricta de cuota de 3 GB
+    const effectiveQuota = user?.storageQuota || (3 * 1024 * 1024 * 1024);
+    const currentUsed = user?.storageUsed || 0;
+    if (currentUsed >= effectiveQuota) {
+      toast({
+        title: "Límite de Almacenamiento Alcanzado",
+        description: `Has alcanzado el límite de 3 GB de tu plan gratuito (${formatBytes(currentUsed)} usados). Libera espacio o mejora tu plan para continuar.`,
+        variant: "destructive"
+      });
+      return;
+    }
+
+    const itemsToUpload = uploadQueue.filter(item => item.status !== 'completed');
+    if (itemsToUpload.length === 0) return;
+
+    setIsUploading(true);
+    setOverallProgress(0);
+
+    // Mapeo preciso de bytes subidos por elemento para calcular progreso continuo y matemáticamente exacto
+    const uploadedBytesMap = new Map<string, number>();
+    uploadQueue.forEach(item => {
+      if (item.status === 'completed') {
+        uploadedBytesMap.set(item.id, item.size || (1024 * 1024));
+      } else {
+        uploadedBytesMap.set(item.id, 0);
+      }
+    });
+
+    const totalBytesAll = uploadQueue.reduce((acc, it) => acc + (it.size || (1024 * 1024)), 0);
+
+    const recalculateOverallProgress = () => {
+      let totalLoaded = 0;
+      uploadedBytesMap.forEach(bytes => { totalLoaded += bytes; });
+      const percent = totalBytesAll > 0 
+        ? Math.min(100, Math.max(0, Math.round((totalLoaded / totalBytesAll) * 100))) 
+        : 0;
+      setOverallProgress(percent);
+    };
+
+    let completedCount = 0;
     const driveItems = itemsToUpload.filter(it => it.isFromDrive && it.driveItem);
     const localItems = itemsToUpload.filter(it => !it.isFromDrive && it.file);
 
-    // 1. Ingesta de archivos de Google Drive (procesamiento resiliente item a item con reintentos para evitar timeouts 503)
+    // 1. Ingesta de archivos de Google Drive con porcentaje de transferencia en vivo
     if (driveItems.length > 0) {
       try {
         let token = await getAccessToken();
@@ -374,7 +470,19 @@ export default function UploadDialog({ isOpen, onClose, user, defaultAlbumId, on
 
         for (let i = 0; i < driveItems.length; i++) {
           const it = driveItems[i];
-          setUploadQueue(prev => prev.map(f => f.id === it.id ? { ...f, status: 'uploading', progress: 15 } : f));
+          const estimatedSize = it.size || (2 * 1024 * 1024);
+
+          setUploadQueue(prev => prev.map(f => f.id === it.id ? { ...f, status: 'uploading', progress: 10 } : f));
+          uploadedBytesMap.set(it.id, Math.round(estimatedSize * 0.1));
+          recalculateOverallProgress();
+
+          let fakeProgress = 15;
+          const progressInterval = setInterval(() => {
+            fakeProgress = Math.min(92, fakeProgress + 15);
+            setUploadQueue(prev => prev.map(f => f.id === it.id ? { ...f, progress: fakeProgress } : f));
+            uploadedBytesMap.set(it.id, Math.round((fakeProgress / 100) * estimatedSize));
+            recalculateOverallProgress();
+          }, 450);
 
           let importedSuccess = false;
           let lastDriveErr: any = null;
@@ -408,7 +516,6 @@ export default function UploadDialog({ isOpen, onClose, user, defaultAlbumId, on
                 if (data.importedCount > 0) {
                   importedSuccess = true;
                   completedCount++;
-                  setUploadQueue(prev => prev.map(f => f.id === it.id ? { ...f, status: 'completed', progress: 100 } : f));
                   break;
                 } else if (data.errors && data.errors.length > 0) {
                   throw new Error(data.errors[0].error || 'Error procesando archivo');
@@ -425,9 +532,17 @@ export default function UploadDialog({ isOpen, onClose, user, defaultAlbumId, on
             }
           }
 
-          if (!importedSuccess) {
+          clearInterval(progressInterval);
+
+          if (importedSuccess) {
+            uploadedBytesMap.set(it.id, estimatedSize);
+            setUploadQueue(prev => prev.map(f => f.id === it.id ? { ...f, status: 'completed', progress: 100 } : f));
+            recalculateOverallProgress();
+          } else {
             console.warn(`[DriveImport] Error importando ${it.name}:`, lastDriveErr?.message);
-            setUploadQueue(prev => prev.map(f => f.id === it.id ? { ...f, status: 'error' } : f));
+            uploadedBytesMap.set(it.id, 0);
+            setUploadQueue(prev => prev.map(f => f.id === it.id ? { ...f, status: 'error', progress: 0 } : f));
+            recalculateOverallProgress();
             toast({
               variant: 'destructive',
               title: `Fallo al importar ${it.name}`,
@@ -445,14 +560,14 @@ export default function UploadDialog({ isOpen, onClose, user, defaultAlbumId, on
       }
     }
 
-    // 2. Ingesta de archivos locales por fragmentos (chunked upload)
+    // 2. Ingesta de archivos locales por fragmentos (chunked upload) con seguimiento continuo de porcentaje real
     for (let i = 0; i < localItems.length; i++) {
       const item = localItems[i];
       const file = item.file!;
       const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
       const fileId = Math.random().toString(36).substring(2, 11);
 
-      setUploadQueue(prev => prev.map(f => f.id === item.id ? { ...f, status: 'uploading' } : f));
+      setUploadQueue(prev => prev.map(f => f.id === item.id ? { ...f, status: 'uploading', progress: 0 } : f));
 
       try {
         for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
@@ -491,49 +606,45 @@ export default function UploadDialog({ isOpen, onClose, user, defaultAlbumId, on
             return fd;
           };
 
-          let response: Response | null = null;
+          let uploadResult: { ok: boolean; status: number; data?: any; error?: string } = { ok: false, status: 0 };
           let lastError: any = null;
 
           for (let attempt = 0; attempt < 3; attempt++) {
-            try {
-              const currentFormData = createChunkFormData();
-              response = await fetch('/api/upload', { 
-                method: 'POST', 
-                body: currentFormData,
-                headers: {
-                  'Accept': 'application/json'
-                }
-              });
-              if (response.ok) break;
-              const errData = await response.json().catch(() => ({}));
-              lastError = new Error(errData.error || `Error del servidor HTTP ${response.status}`);
-            } catch (netErr: any) {
-              lastError = netErr;
-            }
+            const currentFormData = createChunkFormData();
+            uploadResult = await uploadChunkXHR(currentFormData, (loadedBytes) => {
+              const currentFileLoaded = Math.min(file.size, start + loadedBytes);
+              const filePercent = Math.min(99, Math.round((currentFileLoaded / file.size) * 100));
+              setUploadQueue(prev => prev.map(f => f.id === item.id ? { ...f, progress: filePercent } : f));
+              uploadedBytesMap.set(item.id, currentFileLoaded);
+              recalculateOverallProgress();
+            });
+
+            if (uploadResult.ok) break;
+            lastError = new Error(uploadResult.error || `Error del servidor HTTP ${uploadResult.status}`);
             if (attempt < 2) {
               await new Promise(r => setTimeout(r, 600 * (attempt + 1)));
             }
           }
 
-          if (!response || !response.ok) {
+          if (!uploadResult.ok) {
             throw lastError || new Error(`Falla en fragmento ${chunkIndex + 1}/${totalChunks}`);
           }
 
-          const progress = Math.round(((chunkIndex + 1) / totalChunks) * 100);
-          setUploadQueue(prev => prev.map(f => f.id === item.id ? { ...f, progress } : f));
-          
-          const currentTotalProcessed = itemsToUpload.reduce((acc, curr, idx) => {
-            if (idx < i) return acc + 100;
-            if (idx === i) return acc + progress;
-            return acc;
-          }, 0);
-          setOverallProgress(Math.round(currentTotalProcessed / itemsToUpload.length));
+          // Fragmento guardado exitosamente
+          uploadedBytesMap.set(item.id, end);
+          const chunkDonePercent = Math.min(chunkIndex === totalChunks - 1 ? 100 : 99, Math.round((end / file.size) * 100));
+          setUploadQueue(prev => prev.map(f => f.id === item.id ? { ...f, progress: chunkDonePercent } : f));
+          recalculateOverallProgress();
         }
+
         completedCount++;
+        uploadedBytesMap.set(item.id, file.size);
         setUploadQueue(prev => prev.map(f => f.id === item.id ? { ...f, status: 'completed', progress: 100 } : f));
+        recalculateOverallProgress();
       } catch (error: any) {
         console.error("Error al procesar subida de archivo multimedia:", error);
         setUploadQueue(prev => prev.map(f => f.id === item.id ? { ...f, status: 'error' } : f));
+        recalculateOverallProgress();
         toast({ variant: 'destructive', title: 'Error de Ingesta', description: error?.message || 'Error en la subida' });
       }
     }
@@ -542,12 +653,17 @@ export default function UploadDialog({ isOpen, onClose, user, defaultAlbumId, on
 
     if (completedCount > 0) {
       await unlockAchievement(currentUserId, 'first_upload');
-      toast({ title: "Ingesta Completa", description: `${completedCount} archivos geolocalizados.` });
+      toast({ title: "Ingesta Completa", description: `${completedCount} archivos procesados con éxito.` });
       window.dispatchEvent(new CustomEvent('neural-update', { 
         detail: { channel: 'MEDIA', data: { userId: currentUserId } } 
       }));
     }
+
+    if (completedCount === itemsToUpload.length) {
+      setOverallProgress(100);
+    }
     setIsUploading(false);
+
     if (completedCount === itemsToUpload.length) {
       setTimeout(() => { 
         onUploadSuccess?.(); 
@@ -599,8 +715,12 @@ export default function UploadDialog({ isOpen, onClose, user, defaultAlbumId, on
                   <Button 
                     variant="outline" 
                     size="sm" 
-                    className="h-8 px-2.5 rounded-xl border-white/10 bg-white/5 text-white hover:bg-white/10 text-xs" 
-                    onClick={() => setIsDrivePickerOpen(true)}
+                    disabled={isQuotaFull}
+                    className="h-8 px-2.5 rounded-xl border-white/10 bg-white/5 text-white hover:bg-white/10 text-xs disabled:opacity-40" 
+                    onClick={() => {
+                      if (isQuotaFull) return;
+                      setIsDrivePickerOpen(true);
+                    }}
                   >
                     <svg className="h-3.5 w-3.5 mr-1 shrink-0" viewBox="0 0 87.3 78" xmlns="http://www.w3.org/2000/svg">
                       <path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/>
@@ -615,8 +735,12 @@ export default function UploadDialog({ isOpen, onClose, user, defaultAlbumId, on
                   <Button 
                     variant="outline" 
                     size="sm" 
-                    className="h-8 px-2.5 rounded-xl border-white/10 bg-white/5 text-white text-xs" 
-                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isQuotaFull}
+                    className="h-8 px-2.5 rounded-xl border-white/10 bg-white/5 text-white text-xs disabled:opacity-40" 
+                    onClick={() => {
+                      if (isQuotaFull) return;
+                      fileInputRef.current?.click();
+                    }}
                   >
                     <Plus className="h-3.5 w-3.5 mr-1 text-primary" /> <span className="hidden xs:inline">Más</span>
                   </Button>
@@ -639,6 +763,16 @@ export default function UploadDialog({ isOpen, onClose, user, defaultAlbumId, on
 
         {/* CONTENIDO DESPLAZABLE */}
         <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6 space-y-4">
+          {((user?.storageUsed || 0) >= (user?.storageQuota || (3 * 1024 * 1024 * 1024))) && (
+            <div className="p-4 rounded-2xl bg-red-500/10 border border-red-500/30 flex items-start gap-3 text-red-200">
+              <ShieldAlert className="h-5 w-5 text-red-400 shrink-0 mt-0.5" />
+              <div className="text-xs space-y-1">
+                <p className="font-extrabold text-white text-sm">Límite de 3 GB alcanzado</p>
+                <p className="text-muted-foreground">Tu cuenta ha utilizado el 100% del almacenamiento disponible ({formatBytes(user?.storageUsed || 0)} de {formatBytes(user?.storageQuota || (3 * 1024 * 1024 * 1024))}). No podrás realizar nuevas ingestas hasta eliminar contenido o mejorar tu plan.</p>
+              </div>
+            </div>
+          )}
+
           {isCameraMode ? (
             <div className="space-y-4 sm:space-y-6">
               <div className="relative aspect-[3/4] sm:aspect-video bg-black rounded-3xl overflow-hidden border border-white/10 shadow-2xl group">
@@ -667,26 +801,38 @@ export default function UploadDialog({ isOpen, onClose, user, defaultAlbumId, on
             <div className="space-y-3 sm:space-y-4">
               
               {/* ZONA DE ARRASTRE LOCAL */}
-              <div 
-                onClick={() => fileInputRef.current?.click()} 
-                className="border-2 border-dashed border-white/10 rounded-2xl sm:rounded-3xl p-6 sm:p-10 flex flex-col items-center justify-center gap-3 sm:gap-4 transition-all hover:bg-white/[0.02] hover:border-primary/40 group cursor-pointer"
-              >
-                <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center group-hover:scale-110 transition-transform">
-                  <ImageIcon className="h-6 w-6 sm:h-7 sm:w-7 text-primary" />
-                </div>
-                <div className="text-center">
-                  <p className="text-white font-bold text-sm sm:text-base">Archivos de tu Dispositivo</p>
-                  <p className="text-white/50 text-xs mt-0.5">Toca aquí para seleccionar fotos o videos de tu galería local.</p>
-                  <div className="mt-2.5 flex items-center justify-center gap-2 flex-wrap">
-                    <span className="text-[10px] bg-primary/10 text-primary border border-primary/20 py-0.5 px-2.5 rounded-full font-medium inline-flex items-center">
-                      <Sparkles className="h-2.5 w-2.5 mr-1" /> WebP / WebM Auto
-                    </span>
-                    <span className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 py-0.5 px-2.5 rounded-full font-medium inline-flex items-center">
-                      <ShieldCheck className="h-2.5 w-2.5 mr-1" /> Cifrado Zero-Knowledge
-                    </span>
+              {isQuotaFull ? (
+                <div className="border-2 border-dashed border-red-500/30 bg-red-500/5 rounded-2xl sm:rounded-3xl p-6 sm:p-10 flex flex-col items-center justify-center gap-3 sm:gap-4 cursor-not-allowed">
+                  <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-center">
+                    <ShieldAlert className="h-6 w-6 sm:h-7 sm:w-7 text-red-400" />
+                  </div>
+                  <div className="text-center">
+                    <p className="text-white font-bold text-sm sm:text-base">Subidas Bloqueadas: Cuota de 3 GB Llena</p>
+                    <p className="text-red-200/70 text-xs mt-0.5">Has consumido todo tu almacenamiento ({formatBytes(currentUsed)} de {formatBytes(effectiveQuota)}). Elimina archivos o vacía la papelera para continuar subiendo.</p>
                   </div>
                 </div>
-              </div>
+              ) : (
+                <div 
+                  onClick={() => fileInputRef.current?.click()} 
+                  className="border-2 border-dashed border-white/10 rounded-2xl sm:rounded-3xl p-6 sm:p-10 flex flex-col items-center justify-center gap-3 sm:gap-4 transition-all hover:bg-white/[0.02] hover:border-primary/40 group cursor-pointer"
+                >
+                  <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center group-hover:scale-110 transition-transform">
+                    <ImageIcon className="h-6 w-6 sm:h-7 sm:w-7 text-primary" />
+                  </div>
+                  <div className="text-center">
+                    <p className="text-white font-bold text-sm sm:text-base">Archivos de tu Dispositivo</p>
+                    <p className="text-white/50 text-xs mt-0.5">Toca aquí para seleccionar fotos o videos de tu galería local.</p>
+                    <div className="mt-2.5 flex items-center justify-center gap-2 flex-wrap">
+                      <span className="text-[10px] bg-primary/10 text-primary border border-primary/20 py-0.5 px-2.5 rounded-full font-medium inline-flex items-center">
+                        <Sparkles className="h-2.5 w-2.5 mr-1" /> WebP / WebM Auto
+                      </span>
+                      <span className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 py-0.5 px-2.5 rounded-full font-medium inline-flex items-center">
+                        <ShieldCheck className="h-2.5 w-2.5 mr-1" /> Cifrado Zero-Knowledge
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* OPCIONES SECUNDARIAS: GOOGLE DRIVE Y CÁMARA */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
@@ -859,13 +1005,23 @@ export default function UploadDialog({ isOpen, onClose, user, defaultAlbumId, on
           {!isCameraMode && uploadQueue.length > 0 && (
             <Button 
               onClick={handleBatchUpload} 
-              disabled={isUploading} 
-              className="bg-primary hover:bg-primary/90 text-white rounded-xl sm:rounded-2xl font-bold px-5 sm:px-6 h-10 sm:h-11 shadow-lg shadow-primary/25 text-xs sm:text-sm flex-1 sm:flex-none justify-center"
+              disabled={isUploading || isQuotaFull} 
+              className={cn(
+                "rounded-xl sm:rounded-2xl font-bold px-5 sm:px-6 h-10 sm:h-11 shadow-lg text-xs sm:text-sm flex-1 sm:flex-none justify-center",
+                isQuotaFull
+                  ? "bg-red-500/20 text-red-300 border border-red-500/30 cursor-not-allowed"
+                  : "bg-primary hover:bg-primary/90 text-white shadow-primary/25"
+              )}
             >
               {isUploading ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin mr-2" />
                   Procesando...
+                </>
+              ) : isQuotaFull ? (
+                <>
+                  <ShieldAlert className="mr-1.5 h-4 w-4" />
+                  Almacenamiento Lleno (3 GB)
                 </>
               ) : (
                 <>

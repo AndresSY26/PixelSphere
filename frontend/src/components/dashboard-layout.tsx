@@ -91,7 +91,7 @@ const SidebarContent = ({
   setIsAlbumsExpanded,
   onOpenUpgradePlan
 }: any) => {
-  const quota = user?.storageQuota || (3 * 1024 * 1024 * 1024);
+  const quota = (!user?.plan || user?.plan === 'free') ? (3 * 1024 * 1024 * 1024) : (user?.storageQuota || (3 * 1024 * 1024 * 1024));
   const used = user?.storageUsed || 0;
   const usedPercent = Math.min(Math.round((used / quota) * 100), 100);
 
@@ -351,26 +351,37 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       router.push('/login');
     }
 
-    const onNeural = () => {
-      getAlbums().then(setAlbums).catch(() => {});
-      const current = localStorage.getItem('ps_active_session');
-      if (current) {
-        try {
-          const cu = JSON.parse(current);
-          if (cu?.id) {
-            api.auth.getProfile(cu.id).then((fresh: any) => {
-              if (fresh?.id) {
-                setUser(fresh);
-                localStorage.setItem('ps_active_session', JSON.stringify(fresh));
-                localStorage.setItem('pixelsphere_session_user', JSON.stringify(fresh));
-              }
-            }).catch(() => {});
-          }
-        } catch (e) {}
-      }
+    let debounceTimer: NodeJS.Timeout | null = null;
+    const onNeural = (event: any) => {
+      // Si el evento es específico de una acción que no afecta álbumes ni usuario (ej. visualización puntual), omitir
+      const channel = event?.detail?.channel;
+      if (channel === 'HISTORY') return;
+
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        getAlbums().then(setAlbums).catch(() => {});
+        const current = localStorage.getItem('ps_active_session');
+        if (current) {
+          try {
+            const cu = JSON.parse(current);
+            if (cu?.id) {
+              api.auth.getProfile(cu.id).then((fresh: any) => {
+                if (fresh?.id) {
+                  setUser(fresh);
+                  localStorage.setItem('ps_active_session', JSON.stringify(fresh));
+                  localStorage.setItem('pixelsphere_session_user', JSON.stringify(fresh));
+                }
+              }).catch(() => {});
+            }
+          } catch (e) {}
+        }
+      }, 350);
     };
     window.addEventListener('neural-update', onNeural);
-    return () => window.removeEventListener('neural-update', onNeural);
+    return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      window.removeEventListener('neural-update', onNeural);
+    };
   }, []);
 
   const onDropOnAlbum = async (e: React.DragEvent, albumId: string) => {

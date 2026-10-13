@@ -66,6 +66,8 @@ import {
   Inbox,
   Unlock,
   MinusCircle,
+  FolderMinus,
+  CheckSquare,
   Calendar,
   Smartphone
 } from 'lucide-react';
@@ -105,6 +107,13 @@ import { cn, formatRelativeDate, formatBytes } from '@/lib/utils';
 import NeuralVideoPlayer from '@/components/neural-video-player';
 import Image from 'next/image';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 
 type AlbumSortType = 'date-desc' | 'date-asc' | 'name-asc' | 'name-desc';
 
@@ -154,6 +163,13 @@ export default function AlbumsPage() {
   // Navegador de Vínculo
   const [linkNavParentId, setLinkNavParentId] = useState<string | null>(null);
 
+  // Estados para remoción de medios y orquestación de álbumes
+  const [mediaToRemoveFromCurrent, setMediaToRemoveFromCurrent] = useState<Media | null>(null);
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [selectedInAlbumIds, setSelectedInAlbumIds] = useState<Set<string>>(new Set());
+  const [isConfirmBatchRemoveOpen, setIsConfirmBatchRemoveOpen] = useState(false);
+  const [isRemovingMedia, setIsRemovingMedia] = useState(false);
+
   const { toast } = useToast();
 
   const fetchData = useCallback(async (silent = false) => {
@@ -196,10 +212,27 @@ export default function AlbumsPage() {
     fetchData();
 
     // SINCRONIZACIÓN NEURAL EN TIEMPO REAL
-    const onNeuralUpdate = () => fetchData(true);
+    let debounceTimer: NodeJS.Timeout | null = null;
+    const onNeuralUpdate = (event: any) => {
+      const channel = event?.detail?.channel;
+      if (channel === 'HISTORY') return;
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        fetchData(true);
+      }, 350);
+    };
     window.addEventListener('neural-update', onNeuralUpdate);
-    return () => window.removeEventListener('neural-update', onNeuralUpdate);
+    return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      window.removeEventListener('neural-update', onNeuralUpdate);
+    };
   }, [fetchData]);
+
+  useEffect(() => {
+    setIsSelectionMode(false);
+    setSelectedInAlbumIds(new Set());
+    setMediaToRemoveFromCurrent(null);
+  }, [currentAlbumId]);
 
   const allUniqueTags = useMemo(() => {
     const tags = new Set<string>();
@@ -342,32 +375,76 @@ export default function AlbumsPage() {
     }
   };
 
-  const handleRemoveFromAlbum = async (albumId: string) => {
-    const activeUid = user?.id || (typeof window !== 'undefined' && localStorage.getItem('ps_active_session') ? JSON.parse(localStorage.getItem('ps_active_session') || '{}')?.id : null);
-    if (!activeUid || !selectedMedia) return;
+  const handleRemoveMediaFromAlbum = async (albumId: string, mediaIdsToRemove: string[]) => {
+    const activeUid = user?.id || (typeof window !== 'undefined' && localStorage.getItem('ps_active_session') ? JSON.parse(localStorage.getItem('ps_active_session') || '{}')?.id : null) || 'all';
+    if (!albumId || mediaIdsToRemove.length === 0) return;
+    setIsRemovingMedia(true);
     try { 
-      await removeMultipleFromAlbum(albumId, activeUid, [selectedMedia.id]); 
+      await removeMultipleFromAlbum(albumId, activeUid, mediaIdsToRemove); 
       const album = allAlbums.find(a => a.id === albumId);
+      const removeSet = new Set(mediaIdsToRemove);
 
       setAllAlbums(prev => prev.map(a => {
         if (a.id === albumId) {
-          return { ...a, mediaIds: (a.mediaIds || []).filter(id => id !== selectedMedia.id) };
+          return { ...a, mediaIds: (a.mediaIds || []).filter(id => !removeSet.has(id)) };
         }
         return a;
       }));
       setMedia(prev => prev.map(m => {
-        if (m.id === selectedMedia.id) {
+        if (removeSet.has(m.id)) {
           const curAlbumIds = (m.albumIds || (m.albumId ? [m.albumId] : [])).filter(id => id !== albumId);
           return { ...m, albumId: m.albumId === albumId ? (curAlbumIds[0] || undefined) : m.albumId, albumIds: curAlbumIds };
         }
         return m;
       }));
 
-      toast({ title: "Vínculo Removido", description: `Retirado de ${album?.title}` }); 
+      if (selectedMedia && removeSet.has(selectedMedia.id)) {
+        const curAlbumIds = (selectedMedia.albumIds || (selectedMedia.albumId ? [selectedMedia.albumId] : [])).filter(id => id !== albumId);
+        setSelectedMedia(prev => prev ? {
+          ...prev,
+          albumId: prev.albumId === albumId ? (curAlbumIds[0] || undefined) : prev.albumId,
+          albumIds: curAlbumIds
+        } : null);
+      }
+
+      toast({ 
+        title: "Activo(s) Retirado(s)", 
+        description: `${mediaIdsToRemove.length === 1 ? 'El activo fue retirado' : `${mediaIdsToRemove.length} activos fueron retirados`} de "${album?.title || 'la colección'}". Permanece en tu galería.` 
+      }); 
       await fetchData(true);
     } catch (e) {
       console.error("Error al remover del álbum:", e);
-      toast({ title: "Error", variant: "destructive" });
+      toast({ title: "Error al retirar del álbum", variant: "destructive" });
+    } finally {
+      setIsRemovingMedia(false);
+    }
+  };
+
+  const handleRemoveFromAlbum = async (albumId: string) => {
+    if (!selectedMedia) return;
+    await handleRemoveMediaFromAlbum(albumId, [selectedMedia.id]);
+  };
+
+  const handleConfirmRemoveSingle = (item: Media, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setMediaToRemoveFromCurrent(item);
+  };
+
+  const handleToggleItemInAlbum = (item: Media, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setSelectedInAlbumIds(prev => {
+      const next = new Set(prev);
+      if (next.has(item.id)) next.delete(item.id);
+      else next.add(item.id);
+      return next;
+    });
+  };
+
+  const handleToggleSelectAllInAlbum = () => {
+    if (selectedInAlbumIds.size === albumMedia.length) {
+      setSelectedInAlbumIds(new Set());
+    } else {
+      setSelectedInAlbumIds(new Set(albumMedia.map(m => m.id)));
     }
   };
 
@@ -503,7 +580,7 @@ export default function AlbumsPage() {
   const albumMedia = useMemo(() => {
     if (!currentAlbum) return [];
     return media.filter(m => 
-      !m.isPrivate && !m.isDeleted && (
+      !m.isDeleted && (
         (Array.isArray(currentAlbum.mediaIds) && currentAlbum.mediaIds.includes(m.id)) || 
         m.albumId === currentAlbum.id || 
         (Array.isArray(m.albumIds) && m.albumIds.includes(currentAlbum.id))
@@ -530,7 +607,7 @@ export default function AlbumsPage() {
       const album = allAlbums.find(a => a.id === startId);
       if (!album) return;
       media.forEach(m => {
-        if (!m.isPrivate && !m.isDeleted) {
+        if (!m.isDeleted) {
           if (
             (Array.isArray(album.mediaIds) && album.mediaIds.includes(m.id)) ||
             m.albumId === startId ||
@@ -540,7 +617,7 @@ export default function AlbumsPage() {
           }
         }
       });
-      allAlbums.filter(a => a.parentId === startId).forEach(child => crawl(child.id));
+      allAlbums.filter(a => (a.parentId || null) === startId).forEach(child => crawl(child.id));
     };
     crawl(albumId);
     return Array.from(uniqueMedia.values());
@@ -843,12 +920,90 @@ export default function AlbumsPage() {
 
               {albumMedia.length > 0 && (
                 <div className="space-y-6">
-                  <h2 className="text-sm font-bold uppercase tracking-[0.2em] text-white flex items-center gap-2">
-                    <ImageIcon className="h-4 w-4 text-accent" /> Activos Orquestados
-                  </h2>
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-white/5">
+                    <div className="flex items-center gap-3">
+                      <h2 className="text-sm font-bold uppercase tracking-[0.2em] text-white flex items-center gap-2">
+                        <ImageIcon className="h-4 w-4 text-accent" /> Activos Orquestados ({albumMedia.length})
+                      </h2>
+                      {isSelectionMode && selectedInAlbumIds.size > 0 && (
+                        <Badge className="bg-primary/20 text-primary border-primary/30 font-mono text-xs">
+                          {selectedInAlbumIds.size} seleccionados
+                        </Badge>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {isSelectionMode ? (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={handleToggleSelectAllInAlbum}
+                            className="rounded-xl border-white/10 bg-white/5 text-white text-xs h-9"
+                          >
+                            {selectedInAlbumIds.size === albumMedia.length ? 'Deseleccionar todos' : 'Seleccionar todos'}
+                          </Button>
+
+                          {selectedInAlbumIds.size > 0 && (
+                            <Button
+                              size="sm"
+                              onClick={() => setIsConfirmBatchRemoveOpen(true)}
+                              className="rounded-xl bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30 text-xs h-9 font-bold gap-1.5 shadow-sm"
+                            >
+                              <MinusCircle className="h-3.5 w-3.5 text-red-400" />
+                              <span>Quitar {selectedInAlbumIds.size} del álbum</span>
+                            </Button>
+                          )}
+
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => {
+                              setIsSelectionMode(false);
+                              setSelectedInAlbumIds(new Set());
+                            }}
+                            className="rounded-xl text-white/60 hover:text-white text-xs h-9"
+                          >
+                            Cancelar
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setIsSelectionMode(true)}
+                            className="rounded-xl border-white/10 bg-white/5 text-white/80 hover:text-white text-xs h-9 gap-1.5"
+                          >
+                            <CheckSquare className="h-3.5 w-3.5 text-primary" />
+                            <span>Seleccionar</span>
+                          </Button>
+                          <Button
+                            size="sm"
+                            onClick={() => setIsMediaSelectorOpen(true)}
+                            className="rounded-xl bg-primary text-white text-xs h-9 font-bold gap-1.5 shadow-sm shadow-primary/20"
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                            <span>Agregar más</span>
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
                   <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
                     {albumMedia.map((item, idx) => (
-                      <MediaCardItem key={item.id} item={item} index={idx} onClick={openViewer} />
+                      <MediaCardItem 
+                        key={item.id} 
+                        item={item} 
+                        index={idx} 
+                        albumTitle={currentAlbum?.title}
+                        onClick={openViewer} 
+                        onRemoveFromAlbum={handleConfirmRemoveSingle}
+                        isSelectMode={isSelectionMode}
+                        isSelected={selectedInAlbumIds.has(item.id)}
+                        onToggleSelect={handleToggleItemInAlbum}
+                      />
                     ))}
                   </div>
                 </div>
@@ -888,6 +1043,90 @@ export default function AlbumsPage() {
               }}
             >
               Confirmar Acceso
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Diálogo de Confirmación para Quitar de Álbum Individualmente */}
+      <Dialog open={!!mediaToRemoveFromCurrent} onOpenChange={(open) => !open && setMediaToRemoveFromCurrent(null)}>
+        <DialogContent className="max-w-md bg-[#0d0e12] border-white/10 rounded-[2.5rem] p-6 sm:p-8 shadow-2xl">
+          <DialogHeader className="text-center space-y-3">
+            <div className="w-14 h-14 rounded-2xl bg-red-500/10 text-red-400 flex items-center justify-center mx-auto border border-red-500/20">
+              <MinusCircle className="h-7 w-7" />
+            </div>
+            <DialogTitle className="text-xl font-bold text-white">¿Quitar activo del álbum?</DialogTitle>
+            <DialogDescription className="text-white/60 text-xs leading-relaxed">
+              ¿Deseas retirar <strong className="text-white font-semibold">"{mediaToRemoveFromCurrent?.filename}"</strong> de la colección <strong className="text-primary font-semibold">"{currentAlbum?.title}"</strong>?
+              <br /><br />
+              <span className="text-white/40 block text-[11px] bg-white/[0.02] p-3 rounded-xl border border-white/5 text-left">
+                ℹ️ <strong>Tranquilo/a:</strong> El archivo <strong>NO se borrará</strong> de tu galería general ni de la nube. Únicamente dejará de pertenecer a este álbum.
+              </span>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex flex-col sm:flex-row gap-2.5 mt-6">
+            <Button 
+              variant="ghost" 
+              onClick={() => setMediaToRemoveFromCurrent(null)} 
+              className="flex-1 rounded-xl text-white/70 hover:text-white"
+            >
+              Cancelar
+            </Button>
+            <Button 
+              disabled={isRemovingMedia}
+              onClick={async () => {
+                if (mediaToRemoveFromCurrent && currentAlbumId) {
+                  await handleRemoveMediaFromAlbum(currentAlbumId, [mediaToRemoveFromCurrent.id]);
+                  setMediaToRemoveFromCurrent(null);
+                }
+              }}
+              className="flex-1 bg-red-500 hover:bg-red-600 text-white font-bold rounded-xl h-11 shadow-lg shadow-red-500/20 gap-2"
+            >
+              {isRemovingMedia ? <Loader2 className="h-4 w-4 animate-spin" /> : <FolderMinus className="h-4 w-4" />}
+              Quitar del Álbum
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Diálogo de Confirmación para Quitar Selección Masiva */}
+      <Dialog open={isConfirmBatchRemoveOpen} onOpenChange={setIsConfirmBatchRemoveOpen}>
+        <DialogContent className="max-w-md bg-[#0d0e12] border-white/10 rounded-[2.5rem] p-6 sm:p-8 shadow-2xl">
+          <DialogHeader className="text-center space-y-3">
+            <div className="w-14 h-14 rounded-2xl bg-red-500/10 text-red-400 flex items-center justify-center mx-auto border border-red-500/20">
+              <MinusCircle className="h-7 w-7" />
+            </div>
+            <DialogTitle className="text-xl font-bold text-white">¿Quitar {selectedInAlbumIds.size} activos del álbum?</DialogTitle>
+            <DialogDescription className="text-white/60 text-xs leading-relaxed">
+              Se desvincularán los {selectedInAlbumIds.size} elementos seleccionados de la colección <strong className="text-primary font-semibold">"{currentAlbum?.title}"</strong>.
+              <br /><br />
+              <span className="text-white/40 block text-[11px] bg-white/[0.02] p-3 rounded-xl border border-white/5 text-left">
+                ℹ️ <strong>Sin riesgo de pérdida:</strong> Todos los elementos continuarán disponibles intactos en tu galería general.
+              </span>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex flex-col sm:flex-row gap-2.5 mt-6">
+            <Button 
+              variant="ghost" 
+              onClick={() => setIsConfirmBatchRemoveOpen(false)} 
+              className="flex-1 rounded-xl text-white/70 hover:text-white"
+            >
+              Cancelar
+            </Button>
+            <Button 
+              disabled={isRemovingMedia}
+              onClick={async () => {
+                if (currentAlbumId && selectedInAlbumIds.size > 0) {
+                  await handleRemoveMediaFromAlbum(currentAlbumId, Array.from(selectedInAlbumIds));
+                  setSelectedInAlbumIds(new Set());
+                  setIsSelectionMode(false);
+                  setIsConfirmBatchRemoveOpen(false);
+                }
+              }}
+              className="flex-1 bg-red-500 hover:bg-red-600 text-white font-bold rounded-xl h-11 shadow-lg shadow-red-500/20 gap-2"
+            >
+              {isRemovingMedia ? <Loader2 className="h-4 w-4 animate-spin" /> : <FolderMinus className="h-4 w-4" />}
+              Quitar Seleccionados
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1019,8 +1258,19 @@ export default function AlbumsPage() {
                       <div className="space-y-2">
                         {allAlbums.filter(a => (Array.isArray(a.mediaIds) && a.mediaIds.includes(selectedMedia.id)) || selectedMedia.albumId === a.id || (Array.isArray(selectedMedia.albumIds) && selectedMedia.albumIds.includes(a.id))).length > 0 ? (
                           allAlbums.filter(a => (Array.isArray(a.mediaIds) && a.mediaIds.includes(selectedMedia.id)) || selectedMedia.albumId === a.id || (Array.isArray(selectedMedia.albumIds) && selectedMedia.albumIds.includes(a.id))).map(a => (
-                            <div key={a.id} className="text-[10px] text-primary uppercase font-bold tracking-widest flex items-center gap-2 bg-primary/5 p-2 rounded-lg border border-primary/10">
-                              <CheckCircle2 className="h-3 w-3" /> {getFullAlbumPath(a.id)}
+                            <div key={a.id} className="text-[10px] text-primary uppercase font-bold tracking-widest flex items-center justify-between gap-2 bg-primary/5 p-2 rounded-lg border border-primary/10">
+                              <div className="flex items-center gap-2 truncate min-w-0">
+                                <CheckCircle2 className="h-3 w-3 shrink-0" />
+                                <span className="truncate">{getFullAlbumPath(a.id)}</span>
+                              </div>
+                              <button
+                                type="button"
+                                title={`Quitar de ${a.title}`}
+                                onClick={() => handleRemoveMediaFromAlbum(a.id, [selectedMedia.id])}
+                                className="p-1 hover:bg-red-500/20 text-white/40 hover:text-red-400 rounded-md transition-colors shrink-0 ml-1"
+                              >
+                                <X className="h-3 w-3" />
+                              </button>
                             </div>
                           ))
                         ) : (
@@ -1083,20 +1333,51 @@ export default function AlbumsPage() {
                       </PopoverContent>
                     </Popover>
                   </div>
-                  <div className="flex gap-2 w-full"><Button asChild className="flex-1 h-12 bg-primary text-white rounded-xl font-bold"><a href={selectedMedia.url} download={selectedMedia.filename}><Download className="mr-2 h-4 w-4" /> Descargar</a></Button><Button variant="outline" className="h-12 w-12 rounded-xl border-white/10 text-red-400" onClick={async () => {
-                      if (!user || !currentAlbumId) return;
-                      const updatedIds = currentAlbum!.mediaIds.filter(id => id !== selectedMedia.id);
-                      await updateAlbum(currentAlbumId, user.id, { mediaIds: updatedIds });
-                      setSelectedMedia(null);
-                      toast({ title: "Vínculo Removido", description: "El activo ha sido retirado del álbum." });
-                    }}><MinusCircle className="h-5 w-5" /></Button></div>
-                    <Button variant="outline" className="w-full h-10 rounded-xl border-white/10 text-red-400 text-[10px] uppercase font-black tracking-widest hover:bg-red-500/10 transition-all" onClick={async () => {
-                      const activeUid = user?.id || getStoredUser()?.id || 'all';
-                      await deleteMedia(selectedMedia.id, activeUid);
-                      setMedia(prev => prev.filter(m => m.id !== selectedMedia.id));
-                      setSelectedMedia(null);
-                      toast({ title: "Movido a Papelera", description: "Tienes 30 días para recuperarlo antes de su purga definitiva." });
-                    }}><Trash2 className="mr-2 h-3.5 w-3.5" /> Eliminar Activo</Button>
+                  <div className="flex flex-col gap-2.5 w-full">
+                    <div className="flex gap-2 w-full">
+                      <Button asChild className="flex-1 h-12 bg-primary text-white rounded-xl font-bold">
+                        <a href={selectedMedia.url} download={selectedMedia.filename}>
+                          <Download className="mr-2 h-4 w-4" /> Descargar
+                        </a>
+                      </Button>
+                      {currentAlbum && (
+                        <Button 
+                          variant="outline" 
+                          className="h-12 px-3.5 rounded-xl border-red-500/30 bg-red-500/10 hover:bg-red-500/20 text-red-400 font-bold flex items-center justify-center gap-1.5 transition-all shadow-sm"
+                          title={`Quitar de "${currentAlbum.title}"`}
+                          onClick={() => setMediaToRemoveFromCurrent(selectedMedia)}
+                        >
+                          <FolderMinus className="h-4 w-4 shrink-0" />
+                          <span className="hidden sm:inline text-xs">Quitar de Álbum</span>
+                        </Button>
+                      )}
+                    </div>
+
+                    {currentAlbum && (
+                      <Button 
+                        variant="ghost" 
+                        className="w-full h-8 rounded-xl text-red-400/80 hover:text-red-300 hover:bg-red-500/10 text-[11px] font-semibold flex items-center justify-center gap-1.5"
+                        onClick={() => setMediaToRemoveFromCurrent(selectedMedia)}
+                      >
+                        <MinusCircle className="h-3.5 w-3.5" />
+                        <span>Retirar de "{currentAlbum.title}" (Permanece en tu galería)</span>
+                      </Button>
+                    )}
+
+                    <Button 
+                      variant="outline" 
+                      className="w-full h-10 rounded-xl border-white/10 text-red-400 text-[10px] uppercase font-black tracking-widest hover:bg-red-500/10 transition-all" 
+                      onClick={async () => {
+                        const activeUid = user?.id || getStoredUser()?.id || 'all';
+                        await deleteMedia(selectedMedia.id, activeUid);
+                        setMedia(prev => prev.filter(m => m.id !== selectedMedia.id));
+                        setSelectedMedia(null);
+                        toast({ title: "Movido a Papelera", description: "Tienes 30 días para recuperarlo antes de su purga definitiva." });
+                      }}
+                    >
+                      <Trash2 className="mr-2 h-3.5 w-3.5" /> Eliminar Activo de la Galería
+                    </Button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1205,7 +1486,27 @@ export default function AlbumsPage() {
   );
 }
 
-const MediaCardItem = memo(({ item, index, onClick }: { item: Media, index: number, onClick: (item: Media) => void }) => {
+interface MediaCardItemProps {
+  item: Media;
+  index: number;
+  albumTitle?: string;
+  onClick: (item: Media) => void;
+  onRemoveFromAlbum?: (item: Media, e: React.MouseEvent) => void;
+  isSelectMode?: boolean;
+  isSelected?: boolean;
+  onToggleSelect?: (item: Media, e: React.MouseEvent) => void;
+}
+
+const MediaCardItem = memo(({ 
+  item, 
+  index, 
+  albumTitle,
+  onClick,
+  onRemoveFromAlbum,
+  isSelectMode,
+  isSelected,
+  onToggleSelect
+}: MediaCardItemProps) => {
   const [isInView, setIsInView] = useState(false);
   const [isLoaded, setIsLoaded] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -1219,44 +1520,114 @@ const MediaCardItem = memo(({ item, index, onClick }: { item: Media, index: numb
   }, []);
 
   return (
-    <div 
-      ref={cardRef}
-      onClick={() => onClick(item)}
-      className="group relative aspect-square rounded-[2rem] overflow-hidden bg-white/[0.02] border border-white/5 hover:border-primary/50 transition-all cursor-pointer"
-    >
-      {!isLoaded && <div className="absolute inset-0 bg-white/[0.03] animate-pulse" />}
-      {isInView && (
-        <div className="w-full h-full relative">
-          <img 
-            src={item.thumbnailUrl || item.url} 
-            alt={item.filename}
-            onLoad={() => setIsLoaded(true)}
-            onError={(e) => {
-              if (item.url && e.currentTarget.src !== item.url) {
-                e.currentTarget.src = item.url;
-              }
-            }}
-            className={cn(
-              "w-full h-full object-cover transition-all duration-700 group-hover:scale-110", 
-              !isLoaded && "opacity-0",
-              item.isAdultContent && "blur-2xl opacity-40 scale-125"
-            )} 
-          />
-          {item.type === 'video' && (
-            <div className="absolute top-3 right-3 z-10 p-1.5 bg-black/40 backdrop-blur-md rounded-lg border border-white/10">
-              <Play className="h-3 w-3 text-white fill-white" />
+    <ContextMenu>
+      <ContextMenuTrigger asChild disabled={isSelectMode}>
+        <div 
+          ref={cardRef}
+          onClick={(e) => {
+            if (isSelectMode) {
+              onToggleSelect?.(item, e);
+            } else {
+              onClick(item);
+            }
+          }}
+          className={cn(
+            "group relative aspect-square rounded-[2rem] overflow-hidden bg-white/[0.02] border transition-all cursor-pointer",
+            isSelected 
+              ? "border-primary ring-2 ring-primary/50 bg-primary/10 shadow-lg shadow-primary/20" 
+              : "border-white/5 hover:border-primary/50"
+          )}
+        >
+          {!isLoaded && <div className="absolute inset-0 bg-white/[0.03] animate-pulse" />}
+          {isInView && (
+            <div className="w-full h-full relative">
+              <img 
+                src={item.thumbnailUrl || item.url} 
+                alt={item.filename}
+                onLoad={() => setIsLoaded(true)}
+                onError={(e) => {
+                  if (item.url && e.currentTarget.src !== item.url) {
+                    e.currentTarget.src = item.url;
+                  }
+                }}
+                className={cn(
+                  "w-full h-full object-cover transition-all duration-700 group-hover:scale-110", 
+                  !isLoaded && "opacity-0",
+                  item.isAdultContent && "blur-2xl opacity-40 scale-125"
+                )} 
+              />
+              {item.type === 'video' && (
+                <div className="absolute top-3 right-3 z-10 p-1.5 bg-black/40 backdrop-blur-md rounded-lg border border-white/10">
+                  <Play className="h-3 w-3 text-white fill-white" />
+                </div>
+              )}
             </div>
           )}
+
+          {/* Control de Selección Múltiple */}
+          {isSelectMode && (
+            <div 
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleSelect?.(item, e);
+              }}
+              className="absolute top-3 left-3 z-30 cursor-pointer"
+            >
+              <div className={cn(
+                "w-7 h-7 rounded-xl border flex items-center justify-center transition-all shadow-md backdrop-blur-md",
+                isSelected 
+                  ? "bg-primary border-primary text-black" 
+                  : "bg-black/60 border-white/30 text-transparent hover:border-white"
+              )}>
+                <Check className="h-4 w-4 stroke-[3]" />
+              </div>
+            </div>
+          )}
+
+          {/* Botón Flotante para Quitar del Álbum Individualmente */}
+          {onRemoveFromAlbum && !isSelectMode && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onRemoveFromAlbum(item, e);
+              }}
+              title={`Quitar de ${albumTitle || 'este álbum'}`}
+              className="absolute top-3 left-3 z-30 h-8 px-2.5 rounded-xl bg-black/85 hover:bg-red-500 text-white/90 hover:text-white border border-white/20 hover:border-red-400 backdrop-blur-md opacity-90 sm:opacity-0 sm:group-hover:opacity-100 transition-all flex items-center gap-1.5 shadow-xl active:scale-95"
+            >
+              <MinusCircle className="h-4 w-4 text-red-400 group-hover:text-white shrink-0" />
+              <span className="text-[10px] font-bold tracking-wider">Quitar</span>
+            </button>
+          )}
+
+          <div className="absolute inset-0 z-20 transition-opacity duration-300 flex flex-col justify-end p-4 opacity-0 group-hover:opacity-100 bg-gradient-to-t from-black/90 via-black/40 to-transparent">
+            <p className="text-[10px] font-bold text-white truncate uppercase tracking-widest">{item.filename}</p>
+            <div className="flex items-center justify-between gap-2 opacity-80">
+              <span className="text-[8px] font-bold text-white">{formatBytes(item.size)}</span>
+              {item.type === 'video' && <Badge className="h-3 px-1 text-[6px] bg-primary/20 text-primary border-none">VIDEO</Badge>}
+            </div>
+          </div>
         </div>
+      </ContextMenuTrigger>
+      {!isSelectMode && (
+        <ContextMenuContent className="w-56 bg-card border-white/10 shadow-2xl backdrop-blur-xl">
+          <ContextMenuItem onClick={() => onClick(item)}>
+            <Play className="h-4 w-4 mr-2 text-primary" /> Visualizar Activo
+          </ContextMenuItem>
+          {onRemoveFromAlbum && (
+            <>
+              <ContextMenuSeparator className="bg-white/5" />
+              <ContextMenuItem 
+                onClick={(e) => onRemoveFromAlbum(item, e as any)}
+                className="text-red-400 focus:text-white focus:bg-red-500/30 font-medium"
+              >
+                <MinusCircle className="h-4 w-4 mr-2 text-red-400" /> Quitar de {albumTitle ? `"${albumTitle}"` : 'este álbum'}
+              </ContextMenuItem>
+            </>
+          )}
+        </ContextMenuContent>
       )}
-      <div className="absolute inset-0 z-30 transition-opacity duration-300 flex flex-col justify-end p-4 opacity-0 group-hover:opacity-100 bg-gradient-to-t from-black/90 via-black/40 to-transparent">
-        <p className="text-[10px] font-bold text-white truncate uppercase tracking-widest">{item.filename}</p>
-        <div className="flex items-center gap-2 opacity-80">
-          <span className="text-[8px] font-bold text-white">{formatBytes(item.size)}</span>
-          {item.type === 'video' && <Badge className="h-3 px-1 text-[6px] bg-primary/20 text-primary border-none">VIDEO</Badge>}
-        </div>
-      </div>
-    </div>
+    </ContextMenu>
   );
 });
 

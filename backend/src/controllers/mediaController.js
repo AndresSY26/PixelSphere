@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import os from 'node:os';
 import { 
   getMedia, 
   getMediaByUser, 
@@ -33,10 +34,24 @@ import {
 } from '../services/mediaOptimizationService.js';
 import { 
   uploadToCloudStorage, 
-  downloadFromCloudStorage,
-  downloadFromCloudStorageToFile,
+  downloadFromCloudStorage, 
+  downloadFromCloudStorageToFile, 
   deleteFromCloudStorage 
 } from '../services/cloudStorageService.js';
+import { broadcastNeuralEvent } from '../services/eventService.js';
+import { primeMediaCache, getCachedMedia, setCachedMedia, deleteCachedMedia } from '../services/mediaCacheService.js';
+
+const uploadThumbnailsMap = new Map();
+
+let mediaListCache = {
+  data: null,
+  timestamp: 0,
+};
+
+export function invalidateMediaListCache() {
+  mediaListCache.data = null;
+  mediaListCache.timestamp = 0;
+}
 
 export async function listMedia(req, res) {
   try {
@@ -50,8 +65,17 @@ export async function listMedia(req, res) {
       cleanupExpiredTrash(30).catch(() => {});
       items = await getDeletedMedia(filterUserId);
     } else {
-      // Mostrar contenido multimedia activo guardado en el nodo
-      items = await getMedia({ isDeleted: false, userId: filterUserId });
+      // Usar caché en memoria de 2 segundos para evitar queries repetidas a Neon DB al navegar
+      const now = Date.now();
+      if (!query && mediaListCache.data && (now - mediaListCache.timestamp < 2500)) {
+        items = mediaListCache.data;
+      } else {
+        items = await getMedia({ isDeleted: false, userId: null });
+        if (!query) {
+          mediaListCache.data = items;
+          mediaListCache.timestamp = now;
+        }
+      }
     }
 
     if (filterUserId && isDeleted !== 'true') {
@@ -172,20 +196,22 @@ export async function uploadMedia(req, res) {
 
     let cloudStoragePath = '';
     let cloudUrl = '';
+    let imageOptBuffer = null;
 
     if (!isVideo) {
       finalFilename = `${mediaId}_${baseName}.webp`;
       const finalDiskPath = path.join(userUploadPath, finalFilename);
 
-      const opt = await optimizeImageToWebP(file.path || file.buffer, thumbDiskPath);
+      const opt = await optimizeImageToWebP(file.path || file.buffer);
       width = opt.width;
       height = opt.height;
       finalSize = opt.size;
+      imageOptBuffer = opt.buffer;
 
       // Cifrado Zero-Knowledge (AES-256-GCM)
       const encrypted = encryptZeroKnowledge(opt.buffer);
 
-      // Respaldo en Firebase Storage (en la nube)
+      // Respaldo en Firebase Storage (en la nube) - ÚNICAMENTE en la carpeta media/ (Cero duplicación de espacio)
       cloudStoragePath = `media/${cleanUserId}/image/${finalFilename}.enc`;
       try {
         const cloudRes = await uploadToCloudStorage(cloudStoragePath, encrypted);
@@ -194,23 +220,24 @@ export async function uploadMedia(req, res) {
         console.warn('[UploadMedia] Error subiendo a Firebase Storage:', err.message);
       }
 
-      if (opt.thumbnailBuffer) {
-        const encThumb = encryptZeroKnowledge(opt.thumbnailBuffer);
-        uploadToCloudStorage(`thumbnails/${cleanUserId}/${thumbName}.enc`, encThumb).catch(() => {});
-      }
-
       publicPath = `/uploads/${cleanUserId}/image/${finalFilename}`;
+      // La imagen optimizada es su propia miniatura (ahorra 50% de espacio en Firebase Storage)
+      finalThumbnailUrl = publicPath;
 
-      // Limpieza inmediata de archivos de procesamiento temporal en el servidor
+      // Limpieza de archivos temporales
       if (file.path) await fs.promises.unlink(file.path).catch(() => {});
       await fs.promises.unlink(finalDiskPath).catch(() => {});
-      await fs.promises.unlink(thumbDiskPath).catch(() => {});
     } else {
-      finalFilename = `${mediaId}_${baseName}.webm`;
+      const ext = path.extname(file.originalname || '').toLowerCase() || '.mp4';
+      const cleanExt = (ext === '.webm' || ext === '.mov') ? ext : '.mp4';
+      finalFilename = `${mediaId}_${baseName}${cleanExt}`;
       const finalDiskPath = path.join(userUploadPath, finalFilename);
 
-      const opt = await optimizeVideoToWebM(file.path, finalDiskPath, thumbDiskPath);
-      finalSize = opt.size;
+      if (file.path && file.path !== finalDiskPath) {
+        await fs.promises.copyFile(file.path, finalDiskPath);
+      } else if (file.buffer) {
+        await fs.promises.writeFile(finalDiskPath, file.buffer);
+      }
 
       const encVideoPath = `${finalDiskPath}.enc`;
       cloudStoragePath = `media/${cleanUserId}/video/${finalFilename}.enc`;
@@ -222,19 +249,14 @@ export async function uploadMedia(req, res) {
         console.warn('[UploadMedia] Error subiendo video a Firebase Storage:', err.message);
       }
 
-      if (fs.existsSync(thumbDiskPath)) {
-        const thumbBuf = await fs.promises.readFile(thumbDiskPath);
-        const encThumb = encryptZeroKnowledge(thumbBuf);
-        uploadToCloudStorage(`thumbnails/${cleanUserId}/${thumbName}.enc`, encThumb).catch(() => {});
-      }
-
       publicPath = `/uploads/${cleanUserId}/video/${finalFilename}`;
+      // Usar miniatura base64 directa o URL del video (cero archivos duplicados en Firebase Storage)
+      finalThumbnailUrl = publicPath;
 
       // Limpieza inmediata de archivos temporales en el servidor
       if (file.path) await fs.promises.unlink(file.path).catch(() => {});
       await fs.promises.unlink(finalDiskPath).catch(() => {});
       await fs.promises.unlink(encVideoPath).catch(() => {});
-      await fs.promises.unlink(thumbDiskPath).catch(() => {});
     }
 
     const newMedia = {
@@ -246,12 +268,12 @@ export async function uploadMedia(req, res) {
       thumbnailUrl: finalThumbnailUrl,
       cloudStoragePath,
       cloudUrl,
-      filename: `${baseName}.${isVideo ? 'webm' : 'webp'}`,
+      filename: `${baseName}.${isVideo ? 'mp4' : 'webp'}`,
       title: title || file.originalname,
       size: finalSize,
       fileHash: fileHash || undefined,
       mimeType: cleanMime,
-      tags: [detectedType, 'upload', isVideo ? 'webm' : 'webp'],
+      tags: [detectedType, 'upload', isVideo ? 'video' : 'webp'],
       isPrivate: isPrivate === 'true' || isPrivate === true,
       albumId: albumId || null,
       createdAt: new Date().toISOString(),
@@ -263,22 +285,24 @@ export async function uploadMedia(req, res) {
       }
     };
 
-    // Auto-etiquetado inteligente con Gemini si es imagen
-    if (!isVideo) {
-      try {
-        const fileBuffer = await fs.promises.readFile(path.join(userUploadPath, finalFilename));
-        const decryptedForAi = decryptZeroKnowledge(fileBuffer);
-        const dataUri = `data:image/webp;base64,${decryptedForAi.toString('base64')}`;
-        const aiResult = await autoTagImage(dataUri, [], '', file.originalname || finalFilename);
-        if (aiResult?.tags?.length) {
-          newMedia.tags = Array.from(new Set([...newMedia.tags, ...aiResult.tags]));
-        }
-        if (aiResult?.description) {
-          newMedia.description = aiResult.description;
-        }
-      } catch (aiErr) {
-        console.warn('[MediaController] Auto-etiquetado omitido:', aiErr.message);
-      }
+    // Auto-etiquetado con Gemini en segundo plano (asíncrono, cero latencia en subida)
+    if (!isVideo && imageOptBuffer) {
+      const optBuf = imageOptBuffer;
+      setTimeout(async () => {
+        try {
+          const dataUri = `data:image/webp;base64,${optBuf.toString('base64')}`;
+          const aiResult = await autoTagImage(dataUri, [], '', file.originalname || finalFilename);
+          if (aiResult?.tags?.length || aiResult?.description) {
+            const updatedTags = Array.from(new Set([...newMedia.tags, ...(aiResult.tags || [])]));
+            const { query } = await import('../db/index.js');
+            await query('UPDATE media SET tags = $1, description = COALESCE($2, description) WHERE id = $3', [
+              updatedTags,
+              aiResult.description || null,
+              mediaId
+            ]);
+          }
+        } catch (aiErr) {}
+      }, 50);
     }
 
     await saveMediaMetadata(newMedia);
@@ -429,19 +453,22 @@ export async function handleChunkedUpload(req, res) {
     let height = 1080;
     let cloudStoragePath = '';
     let cloudUrl = '';
+    let finalThumbnailUrl = publicPath;
+    let memoryOptBuffer = null;
 
     if (detectedType === 'image') {
       const finalWebpName = `${fileId}_${baseSafeName}.webp`;
       const finalWebpPath = path.join(userUploadPath, finalWebpName);
 
-      const opt = await optimizeImageToWebP(filePath, thumbDiskPath);
+      const opt = await optimizeImageToWebP(filePath);
       width = opt.width;
       height = opt.height;
       finalSize = opt.size;
+      memoryOptBuffer = opt.buffer;
 
       const encrypted = encryptZeroKnowledge(opt.buffer);
 
-      // Respaldo en Firebase Storage
+      // Respaldo en Firebase Storage - ÚNICAMENTE en la carpeta media/ (Cero duplicación en thumbnails/)
       cloudStoragePath = `media/${userId}/image/${finalWebpName}.enc`;
       try {
         const cloudRes = await uploadToCloudStorage(cloudStoragePath, encrypted);
@@ -450,50 +477,42 @@ export async function handleChunkedUpload(req, res) {
         console.warn('[ChunkedUpload] Error subiendo imagen a Firebase Storage:', err.message);
       }
 
-      if (opt.thumbnailBuffer) {
-        const encThumb = encryptZeroKnowledge(opt.thumbnailBuffer);
-        uploadToCloudStorage(`thumbnails/${userId}/${thumbName}.enc`, encThumb).catch(() => {});
-      }
-
       // Limpieza inmediata de disco en el servidor
       await fs.promises.unlink(filePath).catch(() => {});
       await fs.promises.unlink(finalWebpPath).catch(() => {});
-      await fs.promises.unlink(thumbDiskPath).catch(() => {});
 
       finalOptimizedPath = `/uploads/${userId}/image/${finalWebpName}`;
+      // La imagen es su propia miniatura: cero espacio duplicado en Firebase Storage
+      finalThumbnailUrl = finalOptimizedPath;
     } else {
-      const finalWebmName = `${fileId}_${baseSafeName}.webm`;
-      const finalWebmPath = path.join(userUploadPath, finalWebmName);
+      const ext = path.extname(filename || '').toLowerCase() || '.mp4';
+      const cleanExt = (ext === '.webm' || ext === '.mov') ? ext : '.mp4';
+      const finalVideoName = `${fileId}_${baseSafeName}${cleanExt}`;
+      const finalVideoPath = path.join(userUploadPath, finalVideoName);
 
-      const opt = await optimizeVideoToWebM(filePath, finalWebmPath, thumbDiskPath);
-      finalSize = opt.size;
+      if (filePath !== finalVideoPath) {
+        await fs.promises.copyFile(filePath, finalVideoPath);
+      }
 
-      const encWebmPath = `${finalWebmPath}.enc`;
-      cloudStoragePath = `media/${userId}/video/${finalWebmName}.enc`;
+      const encVideoPath = `${finalVideoPath}.enc`;
+      cloudStoragePath = `media/${userId}/video/${finalVideoName}.enc`;
       try {
-        await encryptFileZeroKnowledge(finalWebmPath, encWebmPath);
-        const cloudRes = await uploadToCloudStorage(cloudStoragePath, encWebmPath);
+        await encryptFileZeroKnowledge(finalVideoPath, encVideoPath);
+        const cloudRes = await uploadToCloudStorage(cloudStoragePath, encVideoPath);
         cloudUrl = cloudRes.downloadUrl;
       } catch (err) {
         console.warn('[ChunkedUpload] Error subiendo video a Firebase Storage:', err.message);
       }
 
-      if (fs.existsSync(thumbDiskPath)) {
-        const thumbBuf = await fs.promises.readFile(thumbDiskPath);
-        const encThumb = encryptZeroKnowledge(thumbBuf);
-        uploadToCloudStorage(`thumbnails/${userId}/${thumbName}.enc`, encThumb).catch(() => {});
-      }
-
       // Limpieza inmediata de disco en el servidor
       await fs.promises.unlink(filePath).catch(() => {});
-      await fs.promises.unlink(finalWebmPath).catch(() => {});
-      await fs.promises.unlink(encWebmPath).catch(() => {});
-      await fs.promises.unlink(thumbDiskPath).catch(() => {});
+      await fs.promises.unlink(finalVideoPath).catch(() => {});
+      await fs.promises.unlink(encVideoPath).catch(() => {});
 
-      finalOptimizedPath = `/uploads/${userId}/video/${finalWebmName}`;
+      finalOptimizedPath = `/uploads/${userId}/video/${finalVideoName}`;
+      // Usar miniatura base64 directa o URL directa: cero archivos duplicados en Firebase Storage
+      finalThumbnailUrl = thumbnailB64 || finalOptimizedPath;
     }
-
-    const finalThumbnailUrl = `/uploads/${userId}/thumbnails/${thumbName}`;
 
     const newEntry = {
       id: fileId,
@@ -504,14 +523,14 @@ export async function handleChunkedUpload(req, res) {
       thumbnailUrl: finalThumbnailUrl,
       cloudStoragePath,
       cloudUrl,
-      filename: finalOptimizedFilename,
+      filename: `${baseSafeName}.${detectedType === 'video' ? 'mp4' : 'webp'}`,
       title: filename,
       size: finalSize,
       fileHash: chunkedFileHash || undefined,
       width,
       height,
       mimeType: cleanMime,
-      tags: [detectedType, 'upload', detectedType === 'video' ? 'webm' : 'webp'],
+      tags: [detectedType, 'upload', detectedType === 'video' ? 'video' : 'webp'],
       isPrivate: false,
       isAdultContent,
       albumId: albumId || null,
@@ -522,22 +541,24 @@ export async function handleChunkedUpload(req, res) {
       createdAt: new Date().toISOString()
     };
 
-    // Auto-etiquetado con Gemini solo para imágenes
-    if (detectedType === 'image') {
-      try {
-        const encBuffer = await fs.promises.readFile(path.join(userUploadPath, `${fileId}_${baseSafeName}.webp`));
-        const decryptedForAi = decryptZeroKnowledge(encBuffer);
-        const dataUri = `data:image/webp;base64,${decryptedForAi.toString('base64')}`;
-        const aiResult = await autoTagImage(dataUri, [], '', filename || baseSafeName);
-        if (aiResult?.tags?.length) {
-          newEntry.tags = Array.from(new Set([...newEntry.tags, ...aiResult.tags]));
-        }
-        if (aiResult?.description) {
-          newEntry.description = aiResult.description;
-        }
-      } catch (aiErr) {
-        // Ignorar fallo de Gemini opcional
-      }
+    // Auto-etiquetado con Gemini en segundo plano (asíncrono, cero retardo en la respuesta HTTP)
+    if (detectedType === 'image' && memoryOptBuffer) {
+      const optBuf = memoryOptBuffer;
+      setTimeout(async () => {
+        try {
+          const dataUri = `data:image/webp;base64,${optBuf.toString('base64')}`;
+          const aiResult = await autoTagImage(dataUri, [], '', filename || baseSafeName);
+          if (aiResult?.tags?.length || aiResult?.description) {
+            const updatedTags = Array.from(new Set([...newEntry.tags, ...(aiResult.tags || [])]));
+            const { query } = await import('../db/index.js');
+            await query('UPDATE media SET tags = $1, description = COALESCE($2, description) WHERE id = $3', [
+              updatedTags,
+              aiResult.description || null,
+              fileId
+            ]);
+          }
+        } catch (aiErr) {}
+      }, 50);
     }
 
     await saveMediaMetadata(newEntry);
@@ -566,10 +587,90 @@ export async function handleChunkedUpload(req, res) {
   }
 }
 
-const videoDecryptions = new Map();
+const VIDEO_DISK_CACHE_DIR = path.join(os.tmpdir(), 'pixelsphere_media_cache', 'videos');
+const videoPreparePromises = new Map();
 
 /**
- * STREAMING HTTP 206 (Range headers) PARA REPRODUCCIÓN FLUIDA DE VIDEO
+ * Garantiza que el archivo de video esté descifrado y disponible en disco local para streaming HTTP 206
+ * Cero consumo de RAM: descifra y transmite por streams sin cargar cientos de megabytes en memoria.
+ */
+export async function ensureVideoAvailableOnDisk(media) {
+  if (!media) return null;
+  await fs.promises.mkdir(VIDEO_DISK_CACHE_DIR, { recursive: true });
+  
+  const ext = (media.url || '').endsWith('.mp4') ? '.mp4' : '.webm';
+  const diskDecryptedPath = path.join(VIDEO_DISK_CACHE_DIR, `${media.id}_decrypted${ext}`);
+
+  if (fs.existsSync(diskDecryptedPath)) {
+    try {
+      const stat = await fs.promises.stat(diskDecryptedPath);
+      if (stat.size > 0) return diskDecryptedPath;
+    } catch (e) {}
+  }
+
+  // Deduplicación de peticiones concurrentes para el mismo activo
+  if (videoPreparePromises.has(media.id)) {
+    return await videoPreparePromises.get(media.id);
+  }
+
+  const preparePromise = (async () => {
+    try {
+      // 1. Verificar si ya existe en UPLOADS_DIR local
+      const localUploaded = path.join(UPLOADS_DIR, (media.url || '').replace('/uploads/', ''));
+      if (fs.existsSync(localUploaded)) {
+        try {
+          const stat = await fs.promises.stat(localUploaded);
+          if (stat.size > 0) {
+            // Verificar si tiene cabecera PXZK
+            const fd = await fs.promises.open(localUploaded, 'r');
+            const head = Buffer.alloc(4);
+            await fd.read(head, 0, 4, 0);
+            await fd.close();
+            if (head.toString('utf-8') === 'PXZK') {
+              await decryptFileZeroKnowledge(localUploaded, diskDecryptedPath);
+              return diskDecryptedPath;
+            }
+            return localUploaded;
+          }
+        } catch (e) {}
+      }
+
+      // 2. Descargar archivo cifrado desde Firebase Storage directamente a disco (sin RAM)
+      const cloudPath = media.cloudStoragePath || `media/${media.userId}/video/${path.basename(media.url || '')}.enc`;
+      const diskEncryptedPath = path.join(VIDEO_DISK_CACHE_DIR, `${media.id}_encrypted.enc`);
+
+      let downloaded = await downloadFromCloudStorageToFile(cloudPath, diskEncryptedPath);
+      if (!downloaded || !fs.existsSync(diskEncryptedPath)) {
+        // Intentar ruta sin sufijo .enc
+        const altCloud = cloudPath.replace(/\.enc$/, '');
+        downloaded = await downloadFromCloudStorageToFile(altCloud, diskEncryptedPath);
+      }
+
+      if (!downloaded || !fs.existsSync(diskEncryptedPath)) {
+        throw new Error('Archivo de video no encontrado en Firebase Storage.');
+      }
+
+      // 3. Descifrar con streams en disco
+      await decryptFileZeroKnowledge(diskEncryptedPath, diskDecryptedPath);
+      await fs.promises.unlink(diskEncryptedPath).catch(() => {});
+
+      return diskDecryptedPath;
+    } catch (err) {
+      console.error(`[MediaController] Error preparando video ${media.id} en disco:`, err.message);
+      await fs.promises.unlink(diskDecryptedPath).catch(() => {});
+      throw err;
+    } finally {
+      videoPreparePromises.delete(media.id);
+    }
+  })();
+
+  videoPreparePromises.set(media.id, preparePromise);
+  return await preparePromise;
+}
+
+/**
+ * STREAMING HTTP 206 (Range headers) DIRECTO DESDE DISCO LOCAL
+ * Cero consumo de memoria RAM: respuesta instantánea en milisegundos sin pausas ni bloqueos.
  */
 export async function streamVideo(req, res) {
   try {
@@ -589,25 +690,18 @@ export async function streamVideo(req, res) {
 
     if (!media) return res.status(404).send('Video no encontrado');
 
-    let cloudBuf = null;
-    const cloudPath = media.cloudStoragePath || `media/${media.userId}/video/${path.basename(media.url || '')}.enc`;
-    try {
-      cloudBuf = await downloadFromCloudStorage(cloudPath);
-    } catch (e) {}
-
-    if (!cloudBuf || cloudBuf.length === 0) {
-      return res.status(404).send('Archivo físico de video no encontrado en Firebase Storage.');
+    const localVideoPath = await ensureVideoAvailableOnDisk(media);
+    if (!localVideoPath || !fs.existsSync(localVideoPath)) {
+      return res.status(404).send('Archivo físico de video no encontrado.');
     }
 
-    // Comprobar si está cifrado con Zero-Knowledge (cabecera 'PXZK')
-    const isEncrypted = cloudBuf.length >= 4 && cloudBuf.subarray(0, 4).toString('utf-8') === 'PXZK';
-    const videoBuffer = isEncrypted ? decryptZeroKnowledge(cloudBuf) : cloudBuf;
-    const fileSize = videoBuffer.length;
+    const stat = await fs.promises.stat(localVideoPath);
+    const fileSize = stat.size;
 
     let mime = 'video/webm';
-    if ((media.url || '').endsWith('.mp4')) mime = 'video/mp4';
-    else if ((media.url || '').endsWith('.mov')) mime = 'video/quicktime';
-    else if ((media.url || '').endsWith('.mkv')) mime = 'video/x-matroska';
+    if ((media.url || localVideoPath).endsWith('.mp4')) mime = 'video/mp4';
+    else if ((media.url || localVideoPath).endsWith('.mov')) mime = 'video/quicktime';
+    else if ((media.url || localVideoPath).endsWith('.mkv')) mime = 'video/x-matroska';
 
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
@@ -641,13 +735,19 @@ export async function streamVideo(req, res) {
         'Content-Length': chunkSize,
         'Content-Type': mime,
       });
-      return res.end(videoBuffer.subarray(start, end + 1));
+
+      const stream = fs.createReadStream(localVideoPath, { start, end });
+      req.on('close', () => stream.destroy());
+      return stream.pipe(res);
     } else {
       res.writeHead(200, {
         'Content-Length': fileSize,
         'Content-Type': mime,
+        'Accept-Ranges': 'bytes'
       });
-      return res.end(videoBuffer);
+      const stream = fs.createReadStream(localVideoPath);
+      req.on('close', () => stream.destroy());
+      return stream.pipe(res);
     }
   } catch (error) {
     console.error('[MediaController] Error en streaming de video:', error);

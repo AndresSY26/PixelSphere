@@ -40,7 +40,7 @@ import {
   listDriveFiles, 
   downloadDriveFile 
 } from '@/lib/google-drive';
-import { getAccessToken, googleSignIn } from '@/lib/google-auth';
+import { getAccessToken, setAccessToken, googleSignIn } from '@/lib/google-auth';
 import { useToast } from '@/hooks/use-toast';
 import { cn, formatBytes } from '@/lib/utils';
 
@@ -150,8 +150,22 @@ export default function GoogleDrivePicker({
       }
       setNextPageToken(result.nextPageToken || null);
     } catch (err: any) {
-      console.error('Error cargando Google Drive:', err);
-      setAuthError(err.message || 'Error al conectar con Google Drive');
+      console.warn('Error cargando Google Drive:', err);
+      const isAuthIssue = 
+        err.message?.includes('invalid authentication credentials') ||
+        err.message?.includes('OAuth 2 access token') ||
+        err.message?.includes('401') ||
+        err.message?.includes('UNAUTHENTICATED') ||
+        err.message?.includes('Invalid Credentials') ||
+        err.message?.includes('Token') ||
+        err.message?.includes('expirado');
+
+      if (isAuthIssue) {
+        setAccessToken(null);
+        setAuthError('REQUIRES_AUTH');
+      } else {
+        setAuthError(err.message || 'Error al conectar con Google Drive');
+      }
     } finally {
       setIsLoading(false);
       setIsLoadingMore(false);
@@ -245,6 +259,7 @@ export default function GoogleDrivePicker({
       setIsLoading(true);
       const res = await googleSignIn();
       if (res?.accessToken) {
+        setAccessToken(res.accessToken);
         localStorage.setItem('ps_google_linked', 'true');
         setAuthError(null);
         await fetchFiles(res.accessToken, false, searchQuery, currentFolderId, filterType);
@@ -268,6 +283,15 @@ export default function GoogleDrivePicker({
   const handleConfirmSelection = async () => {
     const allSelected = Array.from(selectedItemsMap.values());
     if (allSelected.length === 0) return;
+
+    if (isDriveQuotaExceeded) {
+      toast({
+        title: "Límite de Almacenamiento Alcanzado",
+        description: `Tu cuenta ha alcanzado o superado el límite de 3 GB (${formatBytes(usedBytes)} usados). Libera espacio o selecciona menos archivos para importar.`,
+        variant: "destructive"
+      });
+      return;
+    }
 
     if (onDriveFilesSelected) {
       onDriveFilesSelected(allSelected);
@@ -434,6 +458,17 @@ export default function GoogleDrivePicker({
   const totalSelectedBytes = Array.from(selectedItemsMap.values()).reduce((sum, item) => {
     return sum + (item.size ? parseInt(item.size, 10) : 0);
   }, 0);
+
+  let sessionUser: any = null;
+  if (typeof window !== 'undefined') {
+    try {
+      const s = localStorage.getItem('ps_active_session');
+      if (s) sessionUser = JSON.parse(s);
+    } catch (e) {}
+  }
+  const quotaBytes = sessionUser?.storageQuota || (3 * 1024 * 1024 * 1024);
+  const usedBytes = sessionUser?.storageUsed || 0;
+  const isDriveQuotaExceeded = usedBytes >= quotaBytes || (totalSelectedBytes > 0 && usedBytes + totalSelectedBytes > quotaBytes);
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && !isImporting && onClose()}>
@@ -725,17 +760,28 @@ export default function GoogleDrivePicker({
               </div>
               <div className="space-y-1 max-w-sm">
                 <p className="text-white font-bold text-base">Vinculación de Google Requerida</p>
-                <p className="text-white/50 text-xs">
-                  Para explorar tus fotos, videos y documentos de Google Drive, autoriza el acceso a tu cuenta.
+                <p className="text-white/60 text-xs leading-relaxed">
+                  {authError && authError !== 'REQUIRES_AUTH' 
+                    ? authError 
+                    : 'Para explorar e importar tus fotos, videos y documentos de Google Drive, autoriza el acceso a tu cuenta con un clic.'}
                 </p>
               </div>
               <Button 
                 onClick={handleConnectGoogle} 
                 disabled={isLoading}
-                className="bg-primary text-white rounded-2xl font-bold px-6 h-11 shadow-lg shadow-primary/25"
+                className="bg-white hover:bg-white/90 text-neutral-900 rounded-2xl font-bold px-6 h-11 shadow-lg shadow-white/10 gap-2.5 transition-all active:scale-95"
               >
-                {isLoading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                Conectar con Google Drive
+                {isLoading ? (
+                  <Loader2 className="h-4 w-4 animate-spin text-neutral-900" />
+                ) : (
+                  <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
+                    <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.66-5.17 3.66-9.17z"/>
+                    <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.27 21.43 7.35 24 12 24z"/>
+                    <path fill="#FBBC05" d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.25C.45 8.18 0 9.99 0 12s.45 3.82 1.25 5.42l4.03-3.15z"/>
+                    <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.35 0 3.27 2.57 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"/>
+                  </svg>
+                )}
+                <span>Conectar con Google Drive</span>
               </Button>
             </div>
           ) : isLoading ? (
@@ -1031,13 +1077,23 @@ export default function GoogleDrivePicker({
               {/* Botón Principal de Acción */}
               <Button
                 onClick={handleConfirmSelection}
-                disabled={selectedItemsMap.size === 0 || isImporting}
-                className="w-full xs:w-auto bg-primary hover:bg-primary/90 text-white rounded-xl sm:rounded-2xl font-bold px-5 sm:px-6 h-11 sm:h-11 shadow-lg shadow-primary/20 text-xs sm:text-sm"
+                disabled={selectedItemsMap.size === 0 || isImporting || isDriveQuotaExceeded}
+                className={cn(
+                  "w-full xs:w-auto rounded-xl sm:rounded-2xl font-bold px-5 sm:px-6 h-11 sm:h-11 shadow-lg text-xs sm:text-sm transition-all",
+                  isDriveQuotaExceeded
+                    ? "bg-red-500/20 text-red-300 border border-red-500/30 cursor-not-allowed"
+                    : "bg-primary hover:bg-primary/90 text-white shadow-primary/20"
+                )}
               >
                 {isImporting ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                     Transfiriendo...
+                  </>
+                ) : isDriveQuotaExceeded ? (
+                  <>
+                    <ShieldAlert className="mr-1.5 h-4 w-4" />
+                    Límite Excedido (3 GB)
                   </>
                 ) : onDriveFilesSelected ? (
                   <>

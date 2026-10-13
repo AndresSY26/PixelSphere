@@ -439,6 +439,23 @@ A continuación se detalla cada una de las mejoras, correcciones y nuevas funcio
 - **Actualización Reactiva Inmediata en la UI:** Al vincular o desvincular un elemento desde la **Galería**, la **Bóveda (Vault)**, la **Búsqueda** o los **Álbumes**, el estado local se actualiza al instante alternando los botones entre *Vincular* y *Desvincular* y emitiendo el evento SSE `neural-update` para actualizar la barra lateral de navegación sin necesidad de recargar la página.
 - **Soporte de Destino de Álbum en Subida y Google Drive:** Se incorporó el parámetro `targetAlbumId` en el modal de subida (`UploadDialog`) y en el extractor de Google Drive para permitir subir o importar archivos directamente hacia una colección específica.
 
+### 4. 🔄 Sincronización Total de Álbumes en Memoria y Solución de Jerarquías Raíz
+- **Sincronización Atómica Neon PostgreSQL + Cache en Memoria:** Cada operación de adición (`addMediaToAlbum`) o eliminación (`removeMediaFromAlbum`) en el backend actualiza de inmediato el registro en PostgreSQL y fuerza la recarga de `CACHE.albums` y `CACHE.media`, garantizando consistencia absoluta ante cualquier reingreso o consulta subsiguiente sin requerir reinicio del servidor.
+- **Corrección Crítica en `AlbumBrowser` (`parentId: null`):** Se resolvió un problema en la comparación de igualdad estricta `a.parentId === (linkNavParentId || undefined)`, que provocaba que las carpetas raíz almacenadas con `parentId: null` fuesen omitidas. Ahora se evalúa con precisión `(a.parentId || null) === (linkNavParentId || null)`.
+- **Detección Flexible de Vinculación (`isAlreadyLinked` / `hasMedia`):** El navegador de vínculos y carruseles ahora verifican el vínculo comprobando `album.mediaIds.includes(mediaId)`, `media.albumId === album.id` y `media.albumIds.includes(album.id)`, evitando discrepancias entre la vista previa y el backend.
+- **Rastreo Recursivo e Inclusión de Activos en Subálbumes:** En `albums.tsx`, la función de rastreo recursivo (`getAlbumMediaRecursive`) y el selector de medios (`albumMedia`) se ajustaron para no filtrar indebidamente activos válidos y recorrer con precisión cualquier profundidad de subálbumes.
+- **Sincronización de Ramas Duplicadas y Archivos Huérfanos:** Se consolidaron las referencias de medios para álbumes con títulos homónimos creados en diferentes rutas (`wqhq912na`, `zrq80w9ka`, `183dttbji`), y se asignó el archivo `1001051438.webp` al álbum `Developer` junto con sus capturas afines.
+- **Migración de Columna `is_private`:** Incorporación automática de la columna `is_private BOOLEAN DEFAULT FALSE` en la tabla `media` de PostgreSQL con soporte en `mapMediaFromDb` y `saveMediaMetadata`.
+
+### 5. 🛠️ Corrección de Error de Importación en `UploadDialog` (`ReferenceError: ChevronRight`)
+- **Resolución de Referencia Faltante:** Se corrigió el error `ReferenceError: ChevronRight is not defined` importando formalmente el componente `ChevronRight` desde `lucide-react` en `frontend/src/components/upload-dialog.tsx`.
+- **Estabilidad en Tarjetas de Selección Rápida:** Las tarjetas interactivas de *Google Drive* y *Cámara Neural* en la vista de subida ahora renderizan sus iconos y transiciones de flecha sin fallos de renderizado en React.
+
+### 6. 🛡️ Manejo Resiliente y Reconexión Automática de Google Drive (401 / Token Expirado)
+- **Recuperación Automática de Credenciales Inválidas:** Manejo proactivo del error `Request had invalid authentication credentials. Expected OAuth 2 access token...` en `frontend/src/components/google-drive-picker.tsx`.
+- **Depuración de Tokens Caducados:** Al detectar expiración o falta de permisos OAuth (401, `UNAUTHENTICATED`, `invalid authentication credentials`), el explorador purga de inmediato los tokens vencidos en `sessionStorage` y `localStorage` (`setAccessToken(null)`).
+- **Flujo Guiado de Reautenticación (`REQUIRES_AUTH`):** La interfaz sustituye mensajes de error crudos por una vista limpia de bienvenida con el botón *"Conectar con Google Drive"*, permitiendo renovar la autorización mediante ventana emergente (`googleSignIn()`) en un clic y continuar explorando sin recargar la aplicación.
+
 ---
 
 <div align="center">

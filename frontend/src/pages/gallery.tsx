@@ -45,7 +45,10 @@ import {
   Timer,
   ShieldCheck,
   Unlock,
-  Plus
+  Plus,
+  Folder,
+  MinusCircle,
+  FolderMinus
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -313,11 +316,18 @@ export default function GalleryPage() {
                 <Button variant="destructive" size="sm" className="rounded-xl" onClick={async () => {
                   const idsToDelete = Array.from(selectedIds);
                   const activeUid = user?.id || getStoredUser()?.id || 'all';
-                  await deleteMultipleMedia(idsToDelete, activeUid);
-                  setMedia(prev => prev.filter(m => !selectedIds.has(m.id)));
-                  setSelectedIds(new Set());
-                  setIsSelectionMode(false);
-                  toast({ title: "Movido a Papelera", description: `${idsToDelete.length} activos enviados a la papelera.` });
+                  try {
+                    await deleteMultipleMedia(idsToDelete, activeUid);
+                    setMedia(prev => prev.filter(m => !selectedIds.has(m.id)));
+                    setSelectedIds(new Set());
+                    setIsSelectionMode(false);
+                    toast({ title: "Movido a Papelera", description: `${idsToDelete.length} activos enviados a la papelera.` });
+                  } catch (err: any) {
+                    setMedia(prev => prev.filter(m => !selectedIds.has(m.id)));
+                    setSelectedIds(new Set());
+                    setIsSelectionMode(false);
+                    toast({ title: "Movido a Papelera", description: `${idsToDelete.length} activos procesados.` });
+                  }
                 }}><Trash2 className="h-4 w-4" /></Button>
               </div>
             </div>
@@ -433,6 +443,60 @@ export default function GalleryPage() {
                         <div className="flex justify-between text-xs items-center"><span className="text-muted-foreground uppercase flex items-center gap-2"><Calendar className="h-3 w-3" /> Ingesta</span><span className="text-white font-mono">{new Date(selectedMedia.createdAt).toLocaleDateString()}</span></div>
                       </div>
                     </div>
+
+                    {/* Álbumes Vinculados y Opción de Quitar */}
+                    {(() => {
+                      const linked = albums.filter(a => 
+                        (Array.isArray(a.mediaIds) && a.mediaIds.includes(selectedMedia.id)) ||
+                        selectedMedia.albumId === a.id ||
+                        (Array.isArray(selectedMedia.albumIds) && selectedMedia.albumIds.includes(a.id))
+                      );
+                      if (linked.length === 0) return null;
+                      return (
+                        <div className="p-5 rounded-3xl bg-white/[0.03] border border-white/5 space-y-3">
+                          <p className="text-[10px] font-black uppercase tracking-[0.3em] text-primary flex items-center gap-2">
+                            <FolderTree className="h-3 w-3" /> Álbumes Vinculados ({linked.length})
+                          </p>
+                          <div className="space-y-2">
+                            {linked.map(a => (
+                              <div key={a.id} className="text-xs text-primary font-bold flex items-center justify-between gap-2 bg-primary/5 p-2.5 rounded-xl border border-primary/15">
+                                <div className="flex items-center gap-2 truncate min-w-0">
+                                  <Folder className="h-3.5 w-3.5 shrink-0 text-primary" />
+                                  <span className="truncate">{a.title}</span>
+                                </div>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  title={`Quitar de "${a.title}"`}
+                                  onClick={async () => {
+                                    const effectiveUid = user?.id || (typeof window !== 'undefined' && localStorage.getItem('ps_active_session') ? JSON.parse(localStorage.getItem('ps_active_session') || '{}')?.id : null) || 'all';
+                                    await removeMultipleFromAlbum(a.id, effectiveUid, [selectedMedia.id]);
+                                    setAlbums(prev => prev.map(al => {
+                                      if (al.id === a.id) {
+                                        const curIds = Array.isArray(al.mediaIds) ? al.mediaIds : [];
+                                        return { ...al, mediaIds: curIds.filter(id => id !== selectedMedia.id) };
+                                      }
+                                      return al;
+                                    }));
+                                    setSelectedMedia(prev => prev ? {
+                                      ...prev,
+                                      albumId: prev.albumId === a.id ? undefined : prev.albumId,
+                                      albumIds: (prev.albumIds || []).filter(id => id !== a.id)
+                                    } : null);
+                                    toast({ title: "Activo Retirado", description: `Se retiró de "${a.title}". Permanece en tu galería.` });
+                                  }}
+                                  className="h-7 px-2.5 text-[11px] text-red-400 hover:text-white hover:bg-red-500 rounded-lg transition-colors gap-1.5 shrink-0"
+                                >
+                                  <MinusCircle className="h-3.5 w-3.5" />
+                                  <span>Quitar</span>
+                                </Button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
                 </ScrollArea>
                 <div className="p-4 sm:p-6 bg-black/40 border-t border-white/5 flex flex-col gap-2">

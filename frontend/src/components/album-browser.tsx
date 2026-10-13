@@ -34,7 +34,7 @@ export const AlbumBrowser = ({
   onRemove 
 }: AlbumBrowserProps) => {
   const currentList = useMemo(() => 
-    allAlbums.filter(a => a.parentId === (linkNavParentId || undefined)), 
+    allAlbums.filter(a => (a.parentId || null) === (linkNavParentId || null)), 
     [linkNavParentId, allAlbums]
   );
   
@@ -43,7 +43,11 @@ export const AlbumBrowser = ({
     [linkNavParentId, allAlbums]
   );
   
-  const isAlreadyLinked = selectedMedia ? parentAlbum?.mediaIds.includes(selectedMedia.id) : false;
+  const isAlreadyLinked = selectedMedia && parentAlbum ? (
+    (Array.isArray(parentAlbum.mediaIds) && parentAlbum.mediaIds.includes(selectedMedia.id)) ||
+    selectedMedia.albumId === parentAlbum.id ||
+    (Array.isArray(selectedMedia.albumIds) && selectedMedia.albumIds.includes(parentAlbum.id))
+  ) : false;
 
   return (
     <div className="space-y-4">
@@ -95,7 +99,11 @@ export const AlbumBrowser = ({
       <ScrollArea className="h-64 pr-2">
         <div className="space-y-1">
           {currentList.map(album => {
-            const hasMedia = selectedMedia && album.mediaIds.includes(selectedMedia.id);
+            const hasMedia = selectedMedia ? (
+              (Array.isArray(album.mediaIds) && album.mediaIds.includes(selectedMedia.id)) ||
+              selectedMedia.albumId === album.id ||
+              (Array.isArray(selectedMedia.albumIds) && selectedMedia.albumIds.includes(album.id))
+            ) : false;
             return (
               <Button 
                 key={album.id}
@@ -110,7 +118,7 @@ export const AlbumBrowser = ({
                   <Folder className={cn("h-5 w-5 mr-3 shrink-0 group-hover:scale-110 transition-transform", hasMedia ? "text-primary" : "text-accent/60")} />
                   <div className="text-left min-w-0">
                     <p className={cn("text-sm font-bold truncate", hasMedia ? "text-primary" : "text-white")}>{album.title}</p>
-                    <p className="text-[9px] uppercase font-black text-muted-foreground/40">{album.mediaIds.length} activos vinculados</p>
+                    <p className="text-[9px] uppercase font-black text-muted-foreground/40">{(album.mediaIds?.length || 0)} activos vinculados</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">

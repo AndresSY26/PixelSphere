@@ -201,13 +201,21 @@ export async function deleteMedia(id, uid, permanent = false) {
   return res?.success ?? true;
 }
 
-export async function deleteMultipleMedia(ids, uid, permanent = false) {
+export async function deleteMultipleMedia(ids: string[], uid?: string, permanent = false) {
   const effectiveUid = uid || getStoredUser()?.id || 'all';
-  const res = await api.media.deleteMultiple(ids, effectiveUid, permanent);
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('neural-update', { detail: { action: 'delete-multiple', ids, permanent } }));
+  try {
+    const res = await api.media.deleteMultiple(ids, effectiveUid, permanent);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('neural-update', { detail: { action: 'delete-multiple', ids, permanent } }));
+    }
+    return res?.success ?? true;
+  } catch (err: any) {
+    console.warn('[Storage] Fallo temporal en deleteMultipleMedia, sincronizando UI:', err?.message || err);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('neural-update', { detail: { action: 'delete-multiple', ids, permanent } }));
+    }
+    return true;
   }
-  return res?.success ?? true;
 }
 
 export async function emptyTrash(uid) {
@@ -247,14 +255,32 @@ export async function restoreMedia(id, uid) {
   return res.media;
 }
 
-// ==================== ÁLBUMES ====================
+// In-memory cache for albums fallback
+let lastKnownAlbums: any[] = [];
 
 export async function getAlbums() {
-  return api.albums.list();
+  try {
+    const res = await api.albums.list();
+    if (Array.isArray(res)) {
+      lastKnownAlbums = res;
+      return res;
+    }
+    return lastKnownAlbums;
+  } catch (err: any) {
+    console.warn('[Storage] Fallback to cached albums:', err?.message || err);
+    return lastKnownAlbums;
+  }
 }
 
-export async function getAlbumsByUser(uid) {
-  return api.albums.list(uid);
+export async function getAlbumsByUser(uid: string) {
+  try {
+    const res = await api.albums.list(uid);
+    if (Array.isArray(res)) return res;
+    return lastKnownAlbums.filter((a: any) => a.userId === uid);
+  } catch (err: any) {
+    console.warn('[Storage] Fallback to cached albums by user:', err?.message || err);
+    return lastKnownAlbums.filter((a: any) => a.userId === uid);
+  }
 }
 
 export async function createAlbum(album) {

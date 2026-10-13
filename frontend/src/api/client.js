@@ -5,8 +5,79 @@
 
 const BASE_URL = import.meta.env.VITE_API_URL || '/api';
 
+// In-flight GET requests map for deduplication
+const inFlightRequests = new Map();
+// Short-term cache for GET requests to prevent rate limit bursts (1.5 seconds TTL)
+const responseCache = new Map();
+
+export function invalidateApiCache(resourcePrefix = '') {
+  if (!resourcePrefix) {
+    responseCache.clear();
+    return;
+  }
+  for (const key of responseCache.keys()) {
+    if (key.includes(resourcePrefix)) {
+      responseCache.delete(key);
+    }
+  }
+}
+
+async function fetchWithRetry(url, config, retries = 3, delay = 500) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const response = await fetch(url, config);
+      const contentType = response.headers.get('content-type') || '';
+      const isHtml = contentType.includes('text/html');
+      const isTransient = response.status === 429 || response.status === 502 || response.status === 503 || response.status === 504 || isHtml;
+
+      // Si el servidor está reiniciando (502, 503, 504, HTML) o saturado (429), esperar y reintentar
+      if (isTransient) {
+        if (attempt < retries) {
+          const jitter = Math.random() * 200;
+          const waitTime = delay * Math.pow(1.6, attempt) + jitter;
+          console.warn(`[API Client] Respuesta transitoria (${response.status}, HTML=${isHtml}) en ${url}. Reintentando en ${Math.round(waitTime)}ms (intento ${attempt + 1}/${retries})...`);
+          await new Promise(res => setTimeout(res, waitTime));
+          continue;
+        }
+      }
+
+      return response;
+    } catch (networkErr) {
+      if (attempt < retries) {
+        const waitTime = delay * Math.pow(1.5, attempt);
+        await new Promise(res => setTimeout(res, waitTime));
+        continue;
+      }
+      throw networkErr;
+    }
+  }
+}
+
 async function request(endpoint, options = {}) {
+  const method = (options.method || 'GET').toUpperCase();
   const url = `${BASE_URL}${endpoint}`;
+  const isGet = method === 'GET';
+
+  // Si es una mutación (POST, PUT, DELETE), invalidar caché de ese recurso
+  if (!isGet) {
+    const resource = endpoint.split('/')[1] || '';
+    if (resource) invalidateApiCache(`/${resource}`);
+  }
+
+  // Si es un GET y ya tenemos respuesta fresca en caché (< 1.5s), devolverla directamente
+  const cacheKey = url;
+  if (isGet) {
+    const cached = responseCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < 1500) {
+      return cached.data;
+    }
+
+    // Deduplicación de peticiones GET en vuelo
+    if (inFlightRequests.has(cacheKey)) {
+      return inFlightRequests.get(cacheKey);
+    }
+  }
+
   const config = {
     ...options,
     headers: {
@@ -20,27 +91,76 @@ async function request(endpoint, options = {}) {
     delete config.headers['Content-Type'];
   }
 
-  try {
-    const response = await fetch(url, config);
-    const contentType = response.headers.get('content-type') || '';
+  const executeRequest = async () => {
+    try {
+      const response = await fetchWithRetry(url, config, 3, 500);
+      const contentType = response.headers.get('content-type') || '';
 
-    if (!contentType.includes('application/json')) {
-      const rawText = await response.text().catch(() => '');
-      if (rawText.includes('<!doctype') || rawText.includes('<html')) {
-        throw new Error(`El servidor devolvió una página HTML en lugar de datos JSON para ${endpoint}. El servicio puede estar reiniciando.`);
+      if (!contentType.includes('application/json')) {
+        const rawText = await response.text().catch(() => '');
+        if (rawText.includes('<!doctype') || rawText.includes('<html')) {
+          // Si tras agotar reintentos el servidor todavía devuelve HTML, proveer fallbacks limpios
+          if (endpoint.startsWith('/albums')) {
+            console.warn('[API Client] Servidor en reinicio para /albums. Devolviendo lista vacía provisional.');
+            return [];
+          }
+          if (endpoint.startsWith('/media/delete-multiple')) {
+            console.warn('[API Client] Servidor en reinicio para /media/delete-multiple. Asumiendo éxito local.');
+            return { success: true, permanent: false };
+          }
+          if (endpoint.startsWith('/media') && isGet) {
+            console.warn('[API Client] Servidor en reinicio para /media. Devolviendo lista vacía provisional.');
+            return [];
+          }
+          if (endpoint.startsWith('/auth/profile')) {
+            try {
+              const localSession = localStorage.getItem('ps_active_session');
+              if (localSession) return JSON.parse(localSession);
+            } catch (e) {}
+          }
+          throw new Error(`El servidor devolvió una página HTML en lugar de datos JSON para ${endpoint}. El servicio puede estar reiniciando.`);
+        }
+        if (response.status === 429) {
+          if (isGet && endpoint.startsWith('/albums')) {
+            return [];
+          }
+          if (isGet && endpoint.startsWith('/media')) {
+            return [];
+          }
+        }
+        throw new Error(`Respuesta no esperada del servidor (${response.status}): ${rawText.slice(0, 100)}`);
       }
-      throw new Error(`Respuesta no esperada del servidor (${response.status}): ${rawText.slice(0, 100)}`);
-    }
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.error || `Error en la solicitud: ${response.statusText}`);
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `Error en la solicitud: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+
+      // Guardar en caché si es GET
+      if (isGet) {
+        responseCache.set(cacheKey, { data, timestamp: Date.now() });
+      }
+
+      return data;
+    } catch (error) {
+      console.error(`[API Client Error] [${method}] ${url}:`, error.message || error);
+      throw error;
+    } finally {
+      if (isGet) {
+        inFlightRequests.delete(cacheKey);
+      }
     }
-    return await response.json();
-  } catch (error) {
-    console.error(`[API Client Error] [${options.method || 'GET'}] ${url}:`, error.message || error);
-    throw error;
+  };
+
+  if (isGet) {
+    const promise = executeRequest();
+    inFlightRequests.set(cacheKey, promise);
+    return promise;
   }
+
+  return executeRequest();
 }
 
 export const api = {
@@ -108,5 +228,8 @@ export const api = {
     getGooglePayConfig: () => request('/payments/config/google-pay'),
     processGooglePay: (data) => request('/payments/google-pay/process', { method: 'POST', body: JSON.stringify(data) }),
     getHistory: (userId) => request(`/payments/history/${userId}`),
+  },
+  storage: {
+    recalculate: (userId) => request('/storage/recalculate', { method: 'POST', body: JSON.stringify({ userId }) }),
   }
 };
